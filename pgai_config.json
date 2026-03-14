@@ -1,0 +1,30 @@
+{
+  "download": {
+    "t_before_origin": 5.0,
+    "t_after_origin": 60.0,
+    "zoom_half_width_s": 3.0,
+    "output_dir": "waveforms_event_001",
+    "base_url": "https://webservices.ingv.it",
+    "user": null,
+    "password": null
+  },
+  "plotting": {
+    "figsize": [
+      20,
+      10
+    ],
+    "dpi": 800,
+    "formats": [
+      "png",
+      "pdf"
+    ],
+    "line_width": 0.7,
+    "full_major_tick_s": 5.0,
+    "full_minor_tick_s": 0.5,
+    "zoom_major_tick_s": 0.2,
+    "zoom_minor_tick_s": 0.01,
+    "draw_minor_grid": true,
+    "draw_major_grid": true,
+    "pick_line_width": 1.2
+  }
+}
