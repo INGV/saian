@@ -12,6 +12,8 @@ from matplotlib.ticker import MultipleLocator, FormatStrFormatter, AutoMinorLoca
 from obspy import Stream, Trace, UTCDateTime, read_inventory
 from obspy.clients.fdsn import Client
 from obspy.core.inventory import Inventory
+from obspy.geodetics import locations2degrees
+from pyrocko import cake
 
 
 # ============================================================
@@ -85,6 +87,12 @@ class PlotConfig:
     draw_major_grid: bool = True
     pick_line_width: float = 1.2
 
+@dataclass
+class TravelTimeConfig:
+    enabled: bool = True
+    model_name: str = "ak135-f-continental.m"
+    receiver_depth_km: float = 0.0
+
 
 # ============================================================
 # DEFAULT CONFIG JSON-STYLE
@@ -112,6 +120,11 @@ DEFAULT_CONFIG = {
         "draw_minor_grid": True,
         "draw_major_grid": True,
         "pick_line_width": 1.2,
+    },
+    "travel_time": {
+        "enabled": True,
+        "model_name": "ak135-f-continental.m",
+        "receiver_depth_km": 0.0
     }
 }
 
@@ -142,10 +155,6 @@ def channel_filename(trace: Trace) -> str:
         f"{trace.stats.network}.{trace.stats.station}.{loc}."
         f"{trace.stats.channel}.{trace.stats.starttime.strftime('%Y%m%dT%H%M%S')}.mseed"
     )
-
-
-def stationxml_filename(net: str, sta: str, loc: str, ch_prefix: str) -> str:
-    return f"{net}.{sta}.{safe_loc(loc)}.{ch_prefix}.stationxml"
 
 
 def stationxml_cache_filename(net: str, sta: str, loc: str) -> str:
@@ -192,7 +201,7 @@ def load_json_config(path: Optional[str]) -> dict:
     return deep_update(DEFAULT_CONFIG, user_cfg)
 
 
-def build_configs(cfg_dict: dict) -> tuple[DownloadConfig, PlotConfig]:
+def build_configs(cfg_dict: dict) -> tuple[DownloadConfig, PlotConfig, TravelTimeConfig]:
     d = cfg_dict.get("download", {})
     p = cfg_dict.get("plotting", {})
 
@@ -220,7 +229,15 @@ def build_configs(cfg_dict: dict) -> tuple[DownloadConfig, PlotConfig]:
         draw_major_grid=bool(p.get("draw_major_grid", True)),
         pick_line_width=float(p.get("pick_line_width", 1.2)),
     )
-    return dcfg, pcfg
+
+    t = cfg_dict.get("travel_time", {})
+    tcfg = TravelTimeConfig(
+        enabled=bool(t.get("enabled", True)),
+        model_name=str(t.get("model_name", "ak135-f-continental.m")),
+        receiver_depth_km=float(t.get("receiver_depth_km", 0.0)),
+    )
+
+    return dcfg, pcfg, tcfg
 
 
 # ============================================================
@@ -454,6 +471,103 @@ def get_or_load_stationxml(
     save_stationxml(inv, xml_path)
     return inv, xml_path, False
 
+def get_station_coordinates(inv: Inventory) -> tuple[float, float, float]:
+    """
+    Restituisce lat, lon, elev_m dalla prima stazione trovata nell'Inventory.
+    """
+    if len(inv.networks) == 0 or len(inv.networks[0].stations) == 0:
+        raise ValueError("Inventory senza stazioni")
+
+    sta = inv.networks[0].stations[0]
+    return float(sta.latitude), float(sta.longitude), float(sta.elevation)
+
+
+def load_cake_model_safe(model_name: str):
+    """
+    Carica il modello Cake richiesto, con fallback al default Pyrocko.
+    """
+    try:
+        model = cake.load_model(model_name)
+        print(f"[OK] Cake model loaded: {model_name}")
+        return model
+    except Exception as exc:
+        print(
+            f"[WARN] impossibile caricare il modello Cake richiesto "
+            f"'{model_name}': {exc}. Uso il modello di default di Pyrocko."
+        )
+        return cake.load_model()
+
+
+def theoretical_phase_pick(
+    model,
+    origin: UTCDateTime,
+    event_lat: float,
+    event_lon: float,
+    event_depth_km: float,
+    station_lat: float,
+    station_lon: float,
+    phase_name: str,
+    tt_cfg: TravelTimeConfig,
+) -> Optional[UTCDateTime]:
+    """
+    Calcola il pick teorico assoluto per una fase, usando una lista di
+    candidati e scegliendo il primo arrivo disponibile.
+    """
+
+    dist_deg = locations2degrees(
+        lat1=event_lat,
+        long1=event_lon,
+        lat2=station_lat,
+        long2=station_lon,
+    )
+
+    # Fasi da provare: prima quelle locali/crostali, poi fallback più generici
+    if phase_name.upper() == "P":
+        candidates = ["Pg", "p", "P"]
+    elif phase_name.upper() == "S":
+        candidates = ["Sg", "s", "S"]
+    else:
+        candidates = [phase_name]
+
+    best_ray = None
+    best_name = None
+
+    for cname in candidates:
+        try:
+            phases = cake.PhaseDef.classic(cname)
+            rays = model.arrivals(
+                phases=phases,
+                distances=[dist_deg],
+                zstart=event_depth_km * 1000.0,
+                zstop=tt_cfg.receiver_depth_km * 1000.0,
+            )
+        except Exception as exc:
+            print(f"[WARN] Cake fallito per fase {cname}: {exc}")
+            continue
+
+        if not rays:
+            print(f"[DEBUG] Nessun arrivo per fase teorica {cname} a {dist_deg:.3f} deg")
+            continue
+
+        first = sorted(rays, key=lambda r: r.t)[0]
+
+        if best_ray is None or first.t < best_ray.t:
+            best_ray = first
+            best_name = cname
+
+    if best_ray is None:
+        print(
+            f"[WARN] Nessun pick teorico trovato per {phase_name} "
+            f"(candidate={candidates}, dist={dist_deg:.3f} deg, depth={event_depth_km:.1f} km)"
+        )
+        return None
+
+    abs_pick = origin + float(best_ray.t)
+    print(
+        f"[INFO] pick teorico {phase_name} = {abs_pick.isoformat()} "
+        f"usando fase {best_name} a distanza {dist_deg:.3f} deg"
+    )
+    return abs_pick
 
 # ============================================================
 # SALVATAGGIO MINISED
@@ -501,7 +615,10 @@ def add_pick_lines(
     s_pick: Optional[UTCDateTime],
     line_width: float,
 ) -> None:
+
+    print(f"DEBUG trace starttime = {tr.stats.starttime}")
     if p_pick is not None:
+        print(f"DEBUG add_pick_lines P = {p_pick}")
         xp = pick_relative_seconds(tr, p_pick)
         ax.axvline(xp, color="tab:red", lw=line_width, ls="--", alpha=0.95)
         ax.text(
@@ -512,6 +629,7 @@ def add_pick_lines(
         )
 
     if s_pick is not None:
+        print(f"DEBUG add_pick_lines S = {s_pick}")
         xs = pick_relative_seconds(tr, s_pick)
         ax.axvline(xs, color="tab:blue", lw=line_width, ls="--", alpha=0.95)
         ax.text(
@@ -537,14 +655,16 @@ def plot_full_station(
     station_req: StationRequest,
     plot_cfg: PlotConfig,
     out_basepath_no_ext: Path,
+    p_pick: Optional[UTCDateTime] = None,
+    s_pick: Optional[UTCDateTime] = None,
     plot_picks: bool = False,
 ) -> None:
+    print(f"DEBUG full plot received p_pick = {p_pick}")
+    print(f"DEBUG full plot received s_pick = {s_pick}")
+    print(f"DEBUG full plot plot_picks = {plot_picks}")
     st = group_3c_for_plot(stream)
     if len(st) == 0:
         return
-
-    p_pick = ensure_utc(event.pick_p_iso)
-    s_pick = ensure_utc(event.pick_s_iso)
 
     fig, axes = plt.subplots(
         len(st), 1,
@@ -679,6 +799,62 @@ def plot_zoom_around_pick(
     save_figure_multi_format(fig, out_basepath_no_ext, plot_cfg.formats, plot_cfg.dpi)
     plt.close(fig)
 
+def resolve_reference_picks(
+    event: EventInfo,
+    inv: Inventory,
+    tt_cfg: TravelTimeConfig,
+    cake_model,
+) -> tuple[Optional[UTCDateTime], Optional[UTCDateTime]]:
+    """
+    Usa i pick osservati se forniti; se mancanti, prova a calcolare i teorici.
+    """
+    origin = ensure_utc(event.origin_time_iso)
+    if origin is None:
+        raise ValueError("origin_time_iso obbligatorio")
+
+    p_pick = ensure_utc(event.pick_p_iso)
+    s_pick = ensure_utc(event.pick_s_iso)
+
+    if not tt_cfg.enabled:
+        return p_pick, s_pick
+
+    try:
+        sta_lat, sta_lon, _ = get_station_coordinates(inv)
+    except Exception as exc:
+        print(f"[WARN] coordinate stazione non disponibili per traveltime teoriche: {exc}")
+        return p_pick, s_pick
+
+    if p_pick is None:
+        p_pick = theoretical_phase_pick(
+            cake_model,
+            origin=origin,
+            event_lat=event.latitude,
+            event_lon=event.longitude,
+            event_depth_km=event.depth_km,
+            station_lat=sta_lat,
+            station_lon=sta_lon,
+            phase_name="P",
+            tt_cfg=tt_cfg,
+        )
+        if p_pick is not None:
+            print(f"[INFO] pick P teorico = {p_pick.isoformat()}")
+
+    if s_pick is None:
+        s_pick = theoretical_phase_pick(
+            cake_model,
+            origin=origin,
+            event_lat=event.latitude,
+            event_lon=event.longitude,
+            event_depth_km=event.depth_km,
+            station_lat=sta_lat,
+            station_lon=sta_lon,
+            phase_name="S",
+            tt_cfg=tt_cfg,
+        )
+        if s_pick is not None:
+            print(f"[INFO] pick S teorico = {s_pick.isoformat()}")
+
+    return p_pick, s_pick
 
 # ============================================================
 # WORKFLOW
@@ -689,6 +865,8 @@ def process_event_stations(
     stations: Iterable[StationRequest],
     download_cfg: DownloadConfig,
     plot_cfg: PlotConfig,
+    tt_cfg: TravelTimeConfig,
+    cake_model,
     make_full: bool = True,
     make_zoom: bool = False,
     plot_picks: bool = False,
@@ -708,9 +886,6 @@ def process_event_stations(
     starttime = origin - download_cfg.t_before_origin
     endtime = origin + download_cfg.t_after_origin
 
-    p_pick = ensure_utc(event.pick_p_iso)
-    s_pick = ensure_utc(event.pick_s_iso)
-
     for sta in stations:
         tag = station_tag(sta.network, sta.station, sta.location, sta.channel_prefix)
         sta_dir = out_root / tag
@@ -728,6 +903,9 @@ def process_event_stations(
                 print(f"[OK] {tag}: StationXML scaricato -> {xml_path}")
         except Exception as exc:
             print(f"[WARN] {tag}: StationXML non disponibile -> {exc}")
+            continue
+
+        p_pick, s_pick = resolve_reference_picks(event, inv, tt_cfg, cake_model)
 
         # 2) Waveforms
         try:
@@ -741,18 +919,23 @@ def process_event_stations(
             continue
 
         save_per_channel_mseed(st, sta_dir)
+        print(f"DEBUG plot_picks = {plot_picks}")
+        print(f"DEBUG resolved p_pick = {p_pick}")
+        print(f"DEBUG resolved s_pick = {s_pick}")
 
         if make_full:
             full_base = sta_dir / f"{tag}_full"
+            print(f"DEBUG full_base = {full_base}")
             plot_full_station(
                 st,
                 event,
                 sta,
                 plot_cfg,
                 full_base,
+                p_pick=p_pick,
+                s_pick=s_pick,
                 plot_picks=plot_picks,
             )
-            print("DEBUG full_base =", full_base)
 
         if make_zoom and p_pick is not None:
             p_base = sta_dir / f"{tag}_zoom_P"
@@ -811,7 +994,10 @@ def main() -> None:
         parser.error("--event e --stations sono obbligatori (tranne quando usi --write-default-config)")
 
     cfg_dict = load_json_config(args.config)
-    download_cfg, plot_cfg = build_configs(cfg_dict)
+    download_cfg, plot_cfg, tt_cfg = build_configs(cfg_dict)
+    cake_model = None
+    if tt_cfg.enabled:
+        cake_model = load_cake_model_safe(tt_cfg.model_name)
 
     event = parse_event_arg(args.event)
     event.pick_p_iso = args.pick_p
@@ -824,6 +1010,8 @@ def main() -> None:
         stations=stations,
         download_cfg=download_cfg,
         plot_cfg=plot_cfg,
+        tt_cfg=tt_cfg,
+        cake_model=cake_model,
         make_full=args.full,
         make_zoom=args.zoom,
         plot_picks=args.plot_picks,
