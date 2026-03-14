@@ -334,6 +334,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="version",
         version="waves2pgai 0.1"
     )
+    parser.add_argument(
+        "--zoom",
+        action="store_true",
+        help="Genera gli zoom intorno ai pick P e/o S, se disponibili",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Genera il plot completo della finestra waveform",
+    )
+    parser.add_argument(
+        "--plot-picks",
+        action="store_true",
+        help="Disegna i pick P/S sui plot, se disponibili",
+    )
     return parser
 
 
@@ -522,6 +537,7 @@ def plot_full_station(
     station_req: StationRequest,
     plot_cfg: PlotConfig,
     out_basepath_no_ext: Path,
+    plot_picks: bool = False,
 ) -> None:
     st = group_3c_for_plot(stream)
     if len(st) == 0:
@@ -555,10 +571,11 @@ def plot_full_station(
             draw_minor_grid=plot_cfg.draw_minor_grid,
         )
 
-        add_pick_lines(
-            ax, tr, p_pick, s_pick,
-            line_width=plot_cfg.pick_line_width
-        )
+        if plot_picks:
+            add_pick_lines(
+                ax, tr, p_pick, s_pick,
+                line_width=plot_cfg.pick_line_width
+            )
 
         ax.yaxis.set_minor_locator(AutoMinorLocator(2))
         ax.tick_params(axis="y", which="major", labelsize=8)
@@ -586,6 +603,7 @@ def plot_zoom_around_pick(
     plot_cfg: PlotConfig,
     zoom_half_width_s: float,
     out_basepath_no_ext: Path,
+    plot_picks: bool = False,
 ) -> None:
     st = group_3c_for_plot(stream)
     if len(st) == 0:
@@ -620,19 +638,21 @@ def plot_zoom_around_pick(
             continue
 
         ax.plot(x[mask], y[mask], color="black", lw=plot_cfg.line_width)
-        ax.axvline(
-            x_pick,
-            color="tab:red" if pick_label.upper() == "P" else "tab:blue",
-            lw=plot_cfg.pick_line_width,
-            ls="--",
-            alpha=0.95
-        )
-        ax.text(
-            x_pick, 0.97, pick_label.upper(),
-            color="tab:red" if pick_label.upper() == "P" else "tab:blue",
-            transform=ax.get_xaxis_transform(),
-            ha="left", va="top", fontsize=9, fontweight="bold"
-        )
+
+        if plot_picks:
+            ax.axvline(
+                x_pick,
+                color="tab:red" if pick_label.upper() == "P" else "tab:blue",
+                lw=plot_cfg.pick_line_width,
+                ls="--",
+                alpha=0.95
+            )
+            ax.text(
+                x_pick, 0.97, pick_label.upper(),
+                color="tab:red" if pick_label.upper() == "P" else "tab:blue",
+                transform=ax.get_xaxis_transform(),
+                ha="left", va="top", fontsize=9, fontweight="bold"
+            )
 
         ax.set_xlim(xmin, xmax)
         ax.set_ylabel(tr.stats.channel, rotation=0, labelpad=28, fontsize=10)
@@ -669,6 +689,9 @@ def process_event_stations(
     stations: Iterable[StationRequest],
     download_cfg: DownloadConfig,
     plot_cfg: PlotConfig,
+    make_full: bool = True,
+    make_zoom: bool = False,
+    plot_picks: bool = False,
 ) -> None:
     out_root = Path(download_cfg.output_dir)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -719,37 +742,47 @@ def process_event_stations(
 
         save_per_channel_mseed(st, sta_dir)
 
-        full_base = sta_dir / f"{tag}_full"
-        plot_full_station(st, event, sta, plot_cfg, full_base)
+        if make_full:
+            full_base = sta_dir / f"{tag}_full"
+            plot_full_station(
+                st,
+                event,
+                sta,
+                plot_cfg,
+                full_base,
+                plot_picks=plot_picks,
+            )
+            print("DEBUG full_base =", full_base)
 
-        if p_pick is not None:
+        if make_zoom and p_pick is not None:
             p_base = sta_dir / f"{tag}_zoom_P"
             plot_zoom_around_pick(
-                st, sta, p_pick, "P",
+                st,
+                sta,
+                p_pick,
+                "P",
                 plot_cfg=plot_cfg,
                 zoom_half_width_s=download_cfg.zoom_half_width_s,
                 out_basepath_no_ext=p_base,
+                plot_picks=plot_picks,
             )
+            print("DEBUG p_base =", p_base)
 
-        if s_pick is not None:
+        if make_zoom and s_pick is not None:
             s_base = sta_dir / f"{tag}_zoom_S"
             plot_zoom_around_pick(
-                st, sta, s_pick, "S",
+                st,
+                sta,
+                s_pick,
+                "S",
                 plot_cfg=plot_cfg,
                 zoom_half_width_s=download_cfg.zoom_half_width_s,
                 out_basepath_no_ext=s_base,
+                plot_picks=plot_picks,
             )
+            print("DEBUG s_base =", s_base)
 
         print(f"[OK] Elaborata stazione {tag}")
-        print("DEBUG full_base =", full_base)
-        
-        if p_pick is not None:
-            p_base = sta_dir / f"{tag}_zoom_P"
-            print("DEBUG p_base =", p_base)
-        
-        if s_pick is not None:
-            s_base = sta_dir / f"{tag}_zoom_S"
-            print("DEBUG s_base =", s_base)
 
 
 # ============================================================
@@ -759,7 +792,9 @@ def process_event_stations(
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
-
+    if not args.full and not args.zoom:
+        args.full = True
+    print(f"[RUN MODE] full={args.full} zoom={args.zoom} plot_picks={args.plot_picks}")
     # modalità scrittura config
     if args.write_default_config:
         out = Path(args.write_default_config)
@@ -789,6 +824,9 @@ def main() -> None:
         stations=stations,
         download_cfg=download_cfg,
         plot_cfg=plot_cfg,
+        make_full=args.full,
+        make_zoom=args.zoom,
+        plot_picks=args.plot_picks,
     )
 
 
