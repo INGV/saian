@@ -1,93 +1,91 @@
-# pgai
 
+# AI-Assisted Seismic Phase Picking via Visual Waveform Interpretation
 
+## Overview
 
-## Getting started
+This project provides a Python tool designed to support a workflow where a generative AI specialized in seismic monitoring analyzes standardized waveform images to detect seismic signals and estimate seismic phase arrivals.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+The core idea is to reproduce the visual workflow of an experienced seismic analyst in a seismic monitoring room, allowing the AI to interpret waveform plots rather than raw time series data.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+The tool performs waveform acquisition, standardized plotting, and automated zoom generation around candidate seismic phases to enable iterative AI-assisted phase picking.
 
-## Add your files
+---
 
-* [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+# Workflow
 
-```
-cd existing_repo
-git remote add origin https://gitlab.rm.ingv.it/raffaele.distefano/pgai.git
-git branch -M main
-git push -uf origin main
-```
+The workflow is structured in two main stages.
 
-## Integrate with your tools
+## 1. Signal Detection and Preliminary Picking
 
-* [Set up project integrations](https://gitlab.rm.ingv.it/raffaele.distefano/pgai/-/settings/integrations)
+The tool generates a full waveform plot from seismic data retrieved via FDSN services.
 
-## Collaborate with your team
+The generative AI receives this image and determines:
 
-* [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+- whether a seismic signal is present  
+- whether a P phase is visible  
+- whether a S phase is visible    
+- approximate positions of the phases on the waveform     
 
-## Test and Deploy
+The AI returns approximate pick positions measured directly on the full waveform image.
 
-Use the built-in continuous integration in GitLab.
+---
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+## 2. High-Resolution Phase Refinement
 
-***
+Using the preliminary picks returned by the AI, the tool automatically generates high-resolution zoom plots centered on:
 
-# Editing this README
+- the P phase  
+- the S phase  
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+These zoomed images are then provided back to the AI for fine picking.
 
-## Suggestions for a good README
+At this stage the AI returns:
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+- refined P pick  
+- refined S pick  
+- phase visibility (if the phase is not observable)  
+- uncertainty estimate (possibly asymmetric)  
+- polarity, when determinable
 
-## Name
-Choose a self-explaining name for your project.
+---
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+# Key Design Principles
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+The project is based on several principles:
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+### Visual interpretation instead of raw waveform input
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+Instead of feeding raw waveform arrays directly into a model, the system presents carefully designed waveform plots that mimic the visual representation used by human analysts.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### Standardized plotting
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+Plots are generated with controlled properties:
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+- high resolution  
+- consistent time axes  
+- precise tick spacing  
+- standardized scaling
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+This ensures both human readability and AI interpretability.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+### Iterative refinement
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+The picking process is intentionally split into two stages:
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+1. coarse detection on the full waveform  
+2. high-precision picking on zoomed views  
 
-## License
-For open source projects, say how it is licensed.
+This approach mirrors the workflow used in manual seismic analysis.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+---
+
+# Features
+
+The current tool provides:
+
+- waveform download via FDSN dataselect  
+- metadata caching via FDSN station  
+- per-channel MiniSEED export  
+- standardized waveform plots  
+- automatic P and S zoom generation  
+- configurable plotting parameters via JSON
