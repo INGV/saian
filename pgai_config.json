@@ -26,5 +26,10 @@
     "draw_minor_grid": true,
     "draw_major_grid": true,
     "pick_line_width": 1.2
+  },
+  "travel_time": {
+    "enabled": true,
+    "model_name": "ak135-f-continental.m",
+    "receiver_depth_km": 0.0
   }
 }
