@@ -734,9 +734,13 @@ def plot_full_station(
     axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
 
     origin = ensure_utc(event.origin_time_iso)
+
+    first_sample_time = st[0].stats.starttime
+
     title = (
-        f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}   "
-        f"Origine: {origin.isoformat()}   "
+        f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}\n"
+        f"First sample: {first_sample_time.isoformat()}   "
+        f"Origin: {origin.isoformat()}\n"
         f"Lat={event.latitude:.5f} Lon={event.longitude:.5f} Depth={event.depth_km:.2f} km"
     )
     fig.suptitle(title, fontsize=12)
@@ -820,9 +824,12 @@ def plot_zoom_around_pick(
         ax.tick_params(axis="y", which="minor", length=2)
 
     axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
+    first_sample_time = st[0].stats.starttime
+
     title = (
-        f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}   "
-        f"Zoom {pick_label.upper()} @ {pick_time.isoformat()}"
+        f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}\n"
+        f"First sample: {first_sample_time.isoformat()}\n"
+        f"Zoom {pick_label.upper()} reference: {pick_time.isoformat()}"
     )
     fig.suptitle(title, fontsize=12)
     fig.tight_layout(rect=[0, 0.02, 1, 0.96])
