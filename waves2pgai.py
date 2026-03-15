@@ -200,6 +200,30 @@ def load_json_config(path: Optional[str]) -> dict:
         user_cfg = json.load(f)
     return deep_update(DEFAULT_CONFIG, user_cfg)
 
+def load_ai_picks_json(path: Optional[str]) -> dict[tuple[str, str, str], dict]:
+    """
+    Carica il JSON restituito dalla AI e costruisce una mappa
+    (network, station, channel_prefix) -> dict pick
+    """
+    if path is None:
+        return {}
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    result = {}
+
+    for item in data.get("stations", []):
+        net = item["network"].strip()
+        sta = item["stacode"].strip()
+        cha = item["channel_code"].strip()
+
+        result[(net, sta, cha)] = item
+
+    print(f"[OK] caricati {len(result)} pick AI dal file {path}")
+
+    return result
+
 
 def build_configs(cfg_dict: dict) -> tuple[DownloadConfig, PlotConfig, TravelTimeConfig]:
     d = cfg_dict.get("download", {})
@@ -365,6 +389,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--plot-picks",
         action="store_true",
         help="Disegna i pick P/S sui plot, se disponibili",
+    )
+
+    parser.add_argument(
+        "--ai-picks-json",
+        default=None,
+        help="File JSON con i pick restituiti dalla AI generativa"
     )
     return parser
 
@@ -704,9 +734,13 @@ def plot_full_station(
     axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
 
     origin = ensure_utc(event.origin_time_iso)
+
+    first_sample_time = st[0].stats.starttime
+
     title = (
-        f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}   "
-        f"Origine: {origin.isoformat()}   "
+        f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}\n"
+        f"First sample: {first_sample_time.isoformat()}   "
+        f"Origin: {origin.isoformat()}\n"
         f"Lat={event.latitude:.5f} Lon={event.longitude:.5f} Depth={event.depth_km:.2f} km"
     )
     fig.suptitle(title, fontsize=12)
@@ -790,9 +824,12 @@ def plot_zoom_around_pick(
         ax.tick_params(axis="y", which="minor", length=2)
 
     axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
+    first_sample_time = st[0].stats.starttime
+
     title = (
-        f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}   "
-        f"Zoom {pick_label.upper()} @ {pick_time.isoformat()}"
+        f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}\n"
+        f"First sample: {first_sample_time.isoformat()}\n"
+        f"Zoom {pick_label.upper()} reference: {pick_time.isoformat()}"
     )
     fig.suptitle(title, fontsize=12)
     fig.tight_layout(rect=[0, 0.02, 1, 0.96])
@@ -804,16 +841,41 @@ def resolve_reference_picks(
     inv: Inventory,
     tt_cfg: TravelTimeConfig,
     cake_model,
+    ai_entry: Optional[dict] = None
 ) -> tuple[Optional[UTCDateTime], Optional[UTCDateTime]]:
     """
-    Usa i pick osservati se forniti; se mancanti, prova a calcolare i teorici.
+    Usa i pick osservati (AI o CLI) se forniti; se mancanti, prova a calcolare i teorici.
+    AI JSON
+    ↓
+    CLI --pick-p / --pick-s
+    ↓
+    theoretical Cake
     """
     origin = ensure_utc(event.origin_time_iso)
     if origin is None:
         raise ValueError("origin_time_iso obbligatorio")
 
-    p_pick = ensure_utc(event.pick_p_iso)
-    s_pick = ensure_utc(event.pick_s_iso)
+    # priorità 1: AI
+    p_pick = None
+    s_pick = None
+
+    if ai_entry is not None:
+        p_ai = ai_entry.get("pick_p")
+        if p_ai and p_ai.get("time"):
+            p_pick = ensure_utc(p_ai["time"])
+            print(f"[AI] pick P = {p_pick}")
+
+        s_ai = ai_entry.get("pick_s")
+        if s_ai and s_ai.get("time"):
+            s_pick = ensure_utc(s_ai["time"])
+            print(f"[AI] pick S = {s_pick}")
+
+    # priorità 2: CLI
+    if p_pick is None:
+        p_pick = ensure_utc(event.pick_p_iso)
+
+    if s_pick is None:
+        s_pick = ensure_utc(event.pick_s_iso)
 
     if not tt_cfg.enabled:
         return p_pick, s_pick
@@ -867,6 +929,7 @@ def process_event_stations(
     plot_cfg: PlotConfig,
     tt_cfg: TravelTimeConfig,
     cake_model,
+    ai_picks: dict,
     make_full: bool = True,
     make_zoom: bool = False,
     plot_picks: bool = False,
@@ -888,6 +951,10 @@ def process_event_stations(
 
     for sta in stations:
         tag = station_tag(sta.network, sta.station, sta.location, sta.channel_prefix)
+        ai_entry = ai_picks.get(
+            (sta.network, sta.station, sta.channel_prefix),
+            None
+        )
         sta_dir = out_root / tag
 
         # 1) StationXML full con cache locale in stations_xml/
@@ -905,7 +972,13 @@ def process_event_stations(
             print(f"[WARN] {tag}: StationXML non disponibile -> {exc}")
             continue
 
-        p_pick, s_pick = resolve_reference_picks(event, inv, tt_cfg, cake_model)
+        p_pick, s_pick = resolve_reference_picks(
+            event,
+            inv,
+            tt_cfg,
+            cake_model,
+            ai_entry
+        )
 
         # 2) Waveforms
         try:
@@ -995,6 +1068,7 @@ def main() -> None:
 
     cfg_dict = load_json_config(args.config)
     download_cfg, plot_cfg, tt_cfg = build_configs(cfg_dict)
+    ai_picks = load_ai_picks_json(args.ai_picks_json)
     cake_model = None
     if tt_cfg.enabled:
         cake_model = load_cake_model_safe(tt_cfg.model_name)
@@ -1012,6 +1086,7 @@ def main() -> None:
         plot_cfg=plot_cfg,
         tt_cfg=tt_cfg,
         cake_model=cake_model,
+        ai_picks=ai_picks,
         make_full=args.full,
         make_zoom=args.zoom,
         plot_picks=args.plot_picks,

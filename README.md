@@ -89,3 +89,57 @@ The current tool provides:
 - standardized waveform plots  
 - automatic P and S zoom generation  
 - configurable plotting parameters via JSON
+
+## AI Picks JSON Format
+
+The generative AI used in this project must return its picking results in a structured JSON file that can be used as input by `waves2pgai.py` in `--zoom` mode.
+
+This JSON is intended to represent the output of one AI interpretation step on waveform images.
+
+### Purpose
+
+The JSON file allows the tool to:
+
+- associate AI picks with specific stations
+- use AI-generated P and S picks to create high-resolution zoom plots
+- optionally carry uncertainty, polarity, and suggested preprocessing parameters
+
+### General structure
+
+The JSON file contains:
+
+- an optional `event` section
+- a mandatory `stations` array
+- one object per station analyzed by the AI
+
+### Example
+
+```json
+{
+  "event": {
+    "origin_time": "2026-03-13T16:26:37Z"
+  },
+  "stations": [
+    {
+      "network": "IV",
+      "stacode": "SGTA",
+      "channel_code": "HH",
+      "pick_p": {
+        "time": "2026-03-13T16:26:42.180Z",
+        "uncertainty_lower": 0.03,
+        "uncertainty_upper": 0.05,
+        "polarity": "up"
+      },
+      "pick_s": {
+        "time": "2026-03-13T16:26:45.920Z",
+        "uncertainty_lower": 0.06,
+        "uncertainty_upper": 0.09
+      },
+      "suggested_bpfilter": {
+        "lower_corner": 1.0,
+        "upper_corner": 15.0,
+        "number_of_poles": 4
+      }
+    }
+  ]
+}
