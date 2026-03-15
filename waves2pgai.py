@@ -670,13 +670,130 @@ def add_pick_lines(
         )
 
 
-def save_figure_multi_format(fig, basepath_no_ext: Path, formats: Iterable[str], dpi: int) -> None:
+def save_figure_multi_format(fig, basepath_no_ext: Path, formats: Iterable[str], dpi: int) -> list[Path]:
+    saved_files: list[Path] = []
+
     for fmt in formats:
         out_file = basepath_no_ext.parent / f"{basepath_no_ext.name}.{fmt}"
         if fmt.lower() == "png":
             fig.savefig(out_file, dpi=dpi, bbox_inches="tight")
         else:
             fig.savefig(out_file, bbox_inches="tight")
+
+        saved_files.append(out_file)
+    return saved_files
+
+# Helpers for metadata json
+def first_sample_time_for_stream(stream: Stream) -> UTCDateTime:
+    st = group_3c_for_plot(stream)
+    if len(st) == 0:
+        raise ValueError("Stream vuoto")
+    return min(tr.stats.starttime for tr in st)
+
+
+def last_sample_time_for_stream(stream: Stream) -> UTCDateTime:
+    st = group_3c_for_plot(stream)
+    if len(st) == 0:
+        raise ValueError("Stream vuoto")
+    return max(tr.stats.endtime for tr in st)
+
+
+def relative_seconds_from_first_sample(stream: Stream, abs_time: UTCDateTime) -> float:
+    return float(abs_time - first_sample_time_for_stream(stream))
+
+
+def trace_descriptors_for_metadata(stream: Stream) -> list[dict]:
+    st = group_3c_for_plot(stream)
+    out = []
+
+    for tr in st:
+        out.append(
+            {
+                "id": tr.id,
+                "channel": tr.stats.channel,
+                "starttime": tr.stats.starttime.isoformat(),
+                "endtime": tr.stats.endtime.isoformat(),
+                "npts": int(tr.stats.npts),
+                "sample_rate_hz": float(tr.stats.sampling_rate),
+                "delta_s": float(tr.stats.delta),
+            }
+        )
+
+    return out
+
+
+def write_plot_metadata(
+    basepath_no_ext: Path,
+    saved_files: list[Path],
+    station_req: StationRequest,
+    event: EventInfo,
+    stream: Stream,
+    plot_type: str,
+    tick_major_s: float,
+    tick_minor_s: float,
+    window_start_relative_s: float,
+    window_end_relative_s: float,
+    plot_picks: bool,
+    zoom_level: Optional[str] = None,
+    zoom_reference_phase: Optional[str] = None,
+    zoom_reference_time: Optional[UTCDateTime] = None,
+) -> None:
+    st = group_3c_for_plot(stream)
+    if len(st) == 0:
+        return
+
+    first_sample = first_sample_time_for_stream(st)
+    last_sample = last_sample_time_for_stream(st)
+    origin = ensure_utc(event.origin_time_iso)
+
+    metadata = {
+        "files": [p.name for p in saved_files],
+        "station": {
+            "network": station_req.network,
+            "stacode": station_req.station,
+            "location": safe_loc(station_req.location),
+            "channel_code": station_req.channel_prefix,
+        },
+        "plot": {
+            "plot_type": plot_type,
+            "zoom_level": zoom_level,
+            "x_axis_reference": "relative_to_first_sample",
+            "first_sample_time": first_sample.isoformat(),
+            "last_sample_time": last_sample.isoformat(),
+            "origin_time": origin.isoformat() if origin is not None else None,
+            "window_start_relative_s": float(window_start_relative_s),
+            "window_end_relative_s": float(window_end_relative_s),
+            "duration_s": float(window_end_relative_s - window_start_relative_s),
+            "zoom_reference_phase": zoom_reference_phase,
+            "zoom_reference_time": zoom_reference_time.isoformat() if zoom_reference_time is not None else None,
+            "tick_major_s": float(tick_major_s),
+            "tick_minor_s": float(tick_minor_s),
+            "plot_picks": bool(plot_picks),
+        },
+        "sampling": {
+            "sample_rate_hz": float(st[0].stats.sampling_rate),
+            "delta_s": float(st[0].stats.delta),
+        },
+        "channels": [tr.stats.channel for tr in st],
+        "traces": trace_descriptors_for_metadata(st),
+        "processing": {
+            "filtered": False,
+            "filter": None,
+            "vertical_exaggeration": {
+                "enabled": False,
+                "channels": [],
+                "factor": 1.0,
+            },
+        },
+    }
+
+    meta_path = basepath_no_ext.parent / f"{basepath_no_ext.name}.meta.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"[OK] scritto metadata plot -> {meta_path}")
+
+
 
 
 def plot_full_station(
@@ -688,7 +805,7 @@ def plot_full_station(
     p_pick: Optional[UTCDateTime] = None,
     s_pick: Optional[UTCDateTime] = None,
     plot_picks: bool = False,
-) -> None:
+) -> list[Path]:
     print(f"DEBUG full plot received p_pick = {p_pick}")
     print(f"DEBUG full plot received s_pick = {s_pick}")
     print(f"DEBUG full plot plot_picks = {plot_picks}")
@@ -734,19 +851,19 @@ def plot_full_station(
     axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
 
     origin = ensure_utc(event.origin_time_iso)
-
-    first_sample_time = st[0].stats.starttime
+    first_sample = first_sample_time_for_stream(st)
 
     title = (
         f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}\n"
-        f"First sample: {first_sample_time.isoformat()}   "
-        f"Origin: {origin.isoformat()}\n"
+        f"First sample: {first_sample.isoformat()}   Origin: {origin.isoformat()}\n"
         f"Lat={event.latitude:.5f} Lon={event.longitude:.5f} Depth={event.depth_km:.2f} km"
     )
+
     fig.suptitle(title, fontsize=12)
     fig.tight_layout(rect=[0, 0.02, 1, 0.96])
-    save_figure_multi_format(fig, out_basepath_no_ext, plot_cfg.formats, plot_cfg.dpi)
+    saved_files = save_figure_multi_format(fig, out_basepath_no_ext, plot_cfg.formats, plot_cfg.dpi)
     plt.close(fig)
+    return saved_files
 
 
 def plot_zoom_around_pick(
@@ -758,7 +875,7 @@ def plot_zoom_around_pick(
     zoom_half_width_s: float,
     out_basepath_no_ext: Path,
     plot_picks: bool = False,
-) -> None:
+) -> list[Path]:
     st = group_3c_for_plot(stream)
     if len(st) == 0:
         return
@@ -824,17 +941,19 @@ def plot_zoom_around_pick(
         ax.tick_params(axis="y", which="minor", length=2)
 
     axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
-    first_sample_time = st[0].stats.starttime
+    first_sample = first_sample_time_for_stream(st)
 
     title = (
         f"{station_req.network}.{station_req.station}.{safe_loc(station_req.location)}.{station_req.channel_prefix}\n"
-        f"First sample: {first_sample_time.isoformat()}\n"
+        f"First sample: {first_sample.isoformat()}\n"
         f"Zoom {pick_label.upper()} reference: {pick_time.isoformat()}"
     )
+    
     fig.suptitle(title, fontsize=12)
     fig.tight_layout(rect=[0, 0.02, 1, 0.96])
-    save_figure_multi_format(fig, out_basepath_no_ext, plot_cfg.formats, plot_cfg.dpi)
+    saved_files = save_figure_multi_format(fig, out_basepath_no_ext, plot_cfg.formats, plot_cfg.dpi)
     plt.close(fig)
+    return saved_files
 
 def resolve_reference_picks(
     event: EventInfo,
@@ -999,7 +1118,8 @@ def process_event_stations(
         if make_full:
             full_base = sta_dir / f"{tag}_full"
             print(f"DEBUG full_base = {full_base}")
-            plot_full_station(
+
+            saved_files = plot_full_station(
                 st,
                 event,
                 sta,
@@ -1010,9 +1130,31 @@ def process_event_stations(
                 plot_picks=plot_picks,
             )
 
+            full_window_start = 0.0
+            full_window_end = float(last_sample_time_for_stream(st) - first_sample_time_for_stream(st))
+
+            write_plot_metadata(
+                basepath_no_ext=full_base,
+                saved_files=saved_files,
+                station_req=sta,
+                event=event,
+                stream=st,
+                plot_type="full",
+                tick_major_s=plot_cfg.full_major_tick_s,
+                tick_minor_s=plot_cfg.full_minor_tick_s,
+                window_start_relative_s=full_window_start,
+                window_end_relative_s=full_window_end,
+                plot_picks=plot_picks,
+                zoom_level=None,
+                zoom_reference_phase=None,
+                zoom_reference_time=None,
+            )
+
         if make_zoom and p_pick is not None:
             p_base = sta_dir / f"{tag}_zoom_P"
-            plot_zoom_around_pick(
+            print(f"DEBUG p_base = {p_base}")
+
+            saved_files = plot_zoom_around_pick(
                 st,
                 sta,
                 p_pick,
@@ -1022,11 +1164,31 @@ def process_event_stations(
                 out_basepath_no_ext=p_base,
                 plot_picks=plot_picks,
             )
-            print("DEBUG p_base =", p_base)
+
+            p_rel = relative_seconds_from_first_sample(st, p_pick)
+
+            write_plot_metadata(
+                basepath_no_ext=p_base,
+                saved_files=saved_files,
+                station_req=sta,
+                event=event,
+                stream=st,
+                plot_type="zoom",
+                tick_major_s=plot_cfg.zoom_major_tick_s,
+                tick_minor_s=plot_cfg.zoom_minor_tick_s,
+                window_start_relative_s=p_rel - download_cfg.zoom_half_width_s,
+                window_end_relative_s=p_rel + download_cfg.zoom_half_width_s,
+                plot_picks=plot_picks,
+                zoom_level="single",
+                zoom_reference_phase="P",
+                zoom_reference_time=p_pick,
+            )
 
         if make_zoom and s_pick is not None:
             s_base = sta_dir / f"{tag}_zoom_S"
-            plot_zoom_around_pick(
+            print(f"DEBUG s_base = {s_base}")
+
+            saved_files = plot_zoom_around_pick(
                 st,
                 sta,
                 s_pick,
@@ -1036,7 +1198,25 @@ def process_event_stations(
                 out_basepath_no_ext=s_base,
                 plot_picks=plot_picks,
             )
-            print("DEBUG s_base =", s_base)
+
+            s_rel = relative_seconds_from_first_sample(st, s_pick)
+
+            write_plot_metadata(
+                basepath_no_ext=s_base,
+                saved_files=saved_files,
+                station_req=sta,
+                event=event,
+                stream=st,
+                plot_type="zoom",
+                tick_major_s=plot_cfg.zoom_major_tick_s,
+                tick_minor_s=plot_cfg.zoom_minor_tick_s,
+                window_start_relative_s=s_rel - download_cfg.zoom_half_width_s,
+                window_end_relative_s=s_rel + download_cfg.zoom_half_width_s,
+                plot_picks=plot_picks,
+                zoom_level="single",
+                zoom_reference_phase="S",
+                zoom_reference_time=s_pick,
+            )
 
         print(f"[OK] Elaborata stazione {tag}")
 
