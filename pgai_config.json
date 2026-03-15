@@ -9,27 +9,38 @@
     "password": null
   },
   "plotting": {
-    "figsize": [
-      20,
-      10
-    ],
+    "figsize": [20, 10],
     "dpi": 800,
-    "formats": [
-      "png",
-      "pdf"
-    ],
+    "formats": ["png", "pdf"],
     "line_width": 0.7,
     "full_major_tick_s": 5.0,
     "full_minor_tick_s": 0.5,
     "zoom_major_tick_s": 0.2,
     "zoom_minor_tick_s": 0.01,
-    "draw_minor_grid": true,
     "draw_major_grid": true,
+    "draw_minor_grid": true,
     "pick_line_width": 1.2
   },
   "travel_time": {
     "enabled": true,
     "model_name": "ak135-f-continental.m",
     "receiver_depth_km": 0.0
+  },
+  "zoom_levels": {
+    "context": {
+      "half_width_s": 3.0,
+      "major_tick_s": 0.5,
+      "minor_tick_s": 0.1
+    },
+    "fine": {
+      "half_width_s": 1.0,
+      "major_tick_s": 0.1,
+      "minor_tick_s": 0.02
+    },
+    "ultrafine": {
+      "half_width_s": 0.4,
+      "major_tick_s": 0.1,
+      "minor_tick_s": 0.02
+    }
   }
 }
