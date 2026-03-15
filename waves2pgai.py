@@ -534,27 +534,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--vertical-exaggeration",
+        "--agc",
         action="store_true",
-        help="Attiva l'esagerazione verticale visuale",
+        help="Apply AGC normalization for visualization"
     )
+
     parser.add_argument(
-        "--ve-factor",
+        "--agc-window",
         type=float,
-        default=None,
-        help="Fattore di esagerazione verticale, es. 2 o 3",
+        default=0.5,
+        help="AGC window length in seconds"
     )
-    parser.add_argument(
-        "--ve-channels",
-        default=None,
-        help="Suffissi canale separati da virgola, es. Z oppure Z,N",
-    )
-    parser.add_argument(
-        "--ve-apply-to",
-        choices=["zoom", "full", "all"],
-        default=None,
-        help="Dove applicare l'esagerazione verticale",
-    )
+
     return parser
 
 
@@ -834,55 +825,28 @@ def parse_csv_upper(value: Optional[str]) -> tuple[str, ...]:
     return tuple(x.strip().upper() for x in value.split(",") if x.strip())
 
 
-def should_apply_vertical_exaggeration(
-    channel_code: str,
-    plot_type: str,
-    plot_cfg: PlotConfig,
-) -> bool:
-    if not plot_cfg.vertical_exaggeration_enabled:
-        return False
+def agc_normalize(y: np.ndarray, sample_rate: float, window_seconds: float, damping: float = 0.05) -> np.ndarray:
+    """
+    AGC migliorato con fattore di smorzamento (damping) per evitare
+    l'esplosione del rumore e senza normalizzazione globale distruttiva.
+    """
+    window_samples = int(window_seconds * sample_rate)
+    if window_samples < 1: window_samples = 1
 
-    apply_to = plot_cfg.vertical_exaggeration_apply_to
-    if apply_to == "zoom" and plot_type != "zoom":
-        return False
-    if apply_to == "full" and plot_type != "full":
-        return False
-    if apply_to not in {"zoom", "full", "all"}:
-        return False
+    # Calcolo energia locale (RMS) con finestra mobile
+    # Usiamo il modulo 'bottleneck' se installato per performance estreme,
+    # altrimenti un array rolling medio va bene.
+    sq = np.square(y)
+    # Calcolo della media mobile (windowing)
+    kernel = np.ones(window_samples) / window_samples
+    rms = np.sqrt(np.convolve(sq, kernel, mode='same'))
 
-    suffix = channel_code[-1].upper()
-    return suffix in set(x.upper() for x in plot_cfg.vertical_exaggeration_channel_suffixes)
+    # Evitiamo divisioni per zero e limitiamo l'amplificazione del rumore
+    # Damping: aggiunge una piccola costante alla media RMS
+    avg_rms = np.mean(rms)
+    gain = 1.0 / (rms + damping * avg_rms)
 
-
-def apply_vertical_exaggeration_if_needed(
-    y: np.ndarray,
-    channel_code: str,
-    plot_type: str,
-    plot_cfg: PlotConfig,
-) -> tuple[np.ndarray, bool]:
-    if should_apply_vertical_exaggeration(channel_code, plot_type, plot_cfg):
-        return y * plot_cfg.vertical_exaggeration_factor, True
-    return y, False
-
-
-def vertical_exaggeration_metadata_for_stream(
-    stream: Stream,
-    plot_type: str,
-    plot_cfg: PlotConfig,
-) -> dict:
-    st = group_3c_for_plot(stream)
-    applied_channels = [
-        tr.stats.channel
-        for tr in st
-        if should_apply_vertical_exaggeration(tr.stats.channel, plot_type, plot_cfg)
-    ]
-
-    return {
-        "enabled": bool(applied_channels),
-        "channels": applied_channels,
-        "factor": float(plot_cfg.vertical_exaggeration_factor) if applied_channels else 1.0,
-        "apply_to": plot_cfg.vertical_exaggeration_apply_to,
-    }
+    return y * gain
 
 
 def save_figure_multi_format(fig, basepath_no_ext: Path, formats: Iterable[str], dpi: int) -> list[Path]:
@@ -995,11 +959,11 @@ def write_plot_metadata(
         "processing": {
             "filtered": False,
             "filter": None,
-            "vertical_exaggeration": vertical_exaggeration_metadata_for_stream(
-                st,
-                plot_type,
-                plot_cfg,
-            ),
+            "amplitude_processing": {
+                "method": "agc",
+                "window_seconds": 0.2,
+                "applied_channels": [tr.stats.channel for tr in st]
+            },
         },
     }
 
@@ -1008,8 +972,6 @@ def write_plot_metadata(
         json.dump(metadata, f, indent=2)
 
     print(f"[OK] scritto metadata plot -> {meta_path}")
-
-
 
 
 def plot_full_station(
@@ -1041,17 +1003,18 @@ def plot_full_station(
         trp = preprocess_trace_for_plot(tr)
         x = get_relative_time_axis(trp)
         y = trp.data.astype(np.float64)
+        suffix = tr.stats.channel[-1].upper()
 
-        y, ve_applied = apply_vertical_exaggeration_if_needed(
-            y,
-            tr.stats.channel,
-            "full",
-            plot_cfg,
-        )
+        if plot_cfg.vertical_exaggeration_enabled:
+            # Applica AGC
+            y = agc_normalize(y, tr.stats.sampling_rate, 0.5)
 
-        channel_label = tr.stats.channel
-        if ve_applied:
-            channel_label = f"{tr.stats.channel} x{plot_cfg.vertical_exaggeration_factor:g}"
+            # ESAGERAZIONE VERTICALE: Se è la componente Z, moltiplica per il fattore
+            if suffix in plot_cfg.vertical_exaggeration_channel_suffixes:
+                y *= plot_cfg.vertical_exaggeration_factor
+                channel_label = f"{tr.stats.channel} (AGC x{plot_cfg.vertical_exaggeration_factor})"
+            else:
+                channel_label = f"{tr.stats.channel} (AGC)"
 
         ax.plot(x, y, color="black", lw=plot_cfg.line_width)
         ax.set_ylabel(channel_label, rotation=0, labelpad=28, fontsize=10)
@@ -1122,16 +1085,15 @@ def plot_zoom_around_pick(
         x = get_relative_time_axis(trp)
         y = trp.data.astype(np.float64)
 
-        y, ve_applied = apply_vertical_exaggeration_if_needed(
-            y,
-            tr.stats.channel,
-            "zoom",
-            plot_cfg,
-        )
-
         channel_label = tr.stats.channel
-        if ve_applied:
-            channel_label = f"{tr.stats.channel} x{plot_cfg.vertical_exaggeration_factor:g}"
+
+        if plot_cfg.vertical_exaggeration_enabled:
+            y = agc_normalize(
+                y,
+                tr.stats.sampling_rate,
+                0.5
+            )
+            channel_label = f"{tr.stats.channel} (AGC)"
 
         x_pick = pick_relative_seconds(tr, pick_time)
         xmin = x_pick - zoom_half_width_s
@@ -1495,12 +1457,16 @@ def process_event_stations(
 # ============================================================
 
 def main() -> None:
+
     parser = build_arg_parser()
     args = parser.parse_args()
+
     if not args.full and not args.zoom:
         args.full = True
+
     print(f"[RUN MODE] full={args.full} zoom={args.zoom} plot_picks={args.plot_picks}")
-    # modalità scrittura config
+
+    # scrittura config default
     if args.write_default_config:
         out = Path(args.write_default_config)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -1511,48 +1477,35 @@ def main() -> None:
         print(f"[OK] Scritto file di configurazione di esempio: {out}")
         return
 
-    # controllo argomenti obbligatori per esecuzione normale
+    # controlli CLI
     if not args.event or not args.stations:
         parser.error("--event e --stations sono obbligatori (tranne quando usi --write-default-config)")
 
+    # config
     cfg_dict = load_json_config(args.config)
+
     zoom_level_presets = load_zoom_level_presets(cfg_dict)
+
     download_cfg, plot_cfg, tt_cfg = build_configs(cfg_dict)
-    if args.vertical_exaggeration:
-        plot_cfg.vertical_exaggeration_enabled = True
 
-    if args.ve_factor is not None:
-        plot_cfg.vertical_exaggeration_factor = float(args.ve_factor)
-
-    if args.ve_channels is not None:
-        parsed = parse_csv_upper(args.ve_channels)
-        if parsed:
-            plot_cfg.vertical_exaggeration_channel_suffixes = parsed
-
-    if args.ve_apply_to is not None:
-        plot_cfg.vertical_exaggeration_apply_to = args.ve_apply_to.lower()
-
-    print(
-        "[VERTICAL EXAGGERATION] "
-        f"enabled={plot_cfg.vertical_exaggeration_enabled} "
-        f"factor={plot_cfg.vertical_exaggeration_factor} "
-        f"channels={plot_cfg.vertical_exaggeration_channel_suffixes} "
-        f"apply_to={plot_cfg.vertical_exaggeration_apply_to}"
-    )
-
+    # livelli zoom
     zoom_levels = parse_zoom_levels_arg(args.zoom_levels)
-
     print(f"[ZOOM LEVELS] {zoom_levels}")
 
+    # pick AI
     ai_picks = load_ai_picks_json(args.ai_picks_json)
+
+    # modello Cake
     cake_model = None
     if tt_cfg.enabled:
         cake_model = load_cake_model_safe(tt_cfg.model_name)
 
+    # evento
     event = parse_event_arg(args.event)
     event.pick_p_iso = args.pick_p
     event.pick_s_iso = args.pick_s
 
+    # stazioni
     stations = parse_stations_arg(args.stations)
 
     process_event_stations(
