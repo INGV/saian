@@ -87,6 +87,12 @@ class PlotConfig:
     draw_major_grid: bool = True
     pick_line_width: float = 1.2
 
+    # vertical exaggeration
+    vertical_exaggeration_enabled: bool = False
+    vertical_exaggeration_factor: float = 3.0
+    vertical_exaggeration_channel_suffixes: tuple[str, ...] = ("Z",)
+    vertical_exaggeration_apply_to: str = "zoom"   # zoom | full | all
+
 @dataclass
 class TravelTimeConfig:
     enabled: bool = True
@@ -125,6 +131,12 @@ DEFAULT_CONFIG = {
         "draw_minor_grid": True,
         "draw_major_grid": True,
         "pick_line_width": 1.2,
+        "vertical_exaggeration": {
+            "enabled": False,
+            "factor": 3.0,
+            "channel_suffixes": ["Z"],
+            "apply_to": "zoom"
+        },
     },
     "travel_time": {
         "enabled": True,
@@ -262,6 +274,7 @@ def build_configs(cfg_dict: dict) -> tuple[DownloadConfig, PlotConfig, TravelTim
     )
 
     figsize = p.get("figsize", [20, 10])
+    ve = p.get("vertical_exaggeration", {})
     pcfg = PlotConfig(
         figsize=(float(figsize[0]), float(figsize[1])),
         dpi=int(p.get("dpi", 800)),
@@ -274,6 +287,12 @@ def build_configs(cfg_dict: dict) -> tuple[DownloadConfig, PlotConfig, TravelTim
         draw_minor_grid=bool(p.get("draw_minor_grid", True)),
         draw_major_grid=bool(p.get("draw_major_grid", True)),
         pick_line_width=float(p.get("pick_line_width", 1.2)),
+        vertical_exaggeration_enabled=bool(ve.get("enabled", False)),
+        vertical_exaggeration_factor=float(ve.get("factor", 3.0)),
+        vertical_exaggeration_channel_suffixes=tuple(
+            str(x).upper() for x in ve.get("channel_suffixes", ["Z"])
+        ),
+        vertical_exaggeration_apply_to=str(ve.get("apply_to", "zoom")).lower(),
     )
 
     t = cfg_dict.get("travel_time", {})
@@ -512,6 +531,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Valori ammessi: single,context,fine,ultrafine,all. "
             "Se omesso e usi --zoom, viene usato 'single' (comportamento legacy)."
         ),
+    )
+
+    parser.add_argument(
+        "--vertical-exaggeration",
+        action="store_true",
+        help="Attiva l'esagerazione verticale visuale",
+    )
+    parser.add_argument(
+        "--ve-factor",
+        type=float,
+        default=None,
+        help="Fattore di esagerazione verticale, es. 2 o 3",
+    )
+    parser.add_argument(
+        "--ve-channels",
+        default=None,
+        help="Suffissi canale separati da virgola, es. Z oppure Z,N",
+    )
+    parser.add_argument(
+        "--ve-apply-to",
+        choices=["zoom", "full", "all"],
+        default=None,
+        help="Dove applicare l'esagerazione verticale",
     )
     return parser
 
@@ -786,6 +828,62 @@ def add_pick_lines(
             ha="left", va="top", fontsize=9, fontweight="bold"
         )
 
+def parse_csv_upper(value: Optional[str]) -> tuple[str, ...]:
+    if value is None or not value.strip():
+        return tuple()
+    return tuple(x.strip().upper() for x in value.split(",") if x.strip())
+
+
+def should_apply_vertical_exaggeration(
+    channel_code: str,
+    plot_type: str,
+    plot_cfg: PlotConfig,
+) -> bool:
+    if not plot_cfg.vertical_exaggeration_enabled:
+        return False
+
+    apply_to = plot_cfg.vertical_exaggeration_apply_to
+    if apply_to == "zoom" and plot_type != "zoom":
+        return False
+    if apply_to == "full" and plot_type != "full":
+        return False
+    if apply_to not in {"zoom", "full", "all"}:
+        return False
+
+    suffix = channel_code[-1].upper()
+    return suffix in set(x.upper() for x in plot_cfg.vertical_exaggeration_channel_suffixes)
+
+
+def apply_vertical_exaggeration_if_needed(
+    y: np.ndarray,
+    channel_code: str,
+    plot_type: str,
+    plot_cfg: PlotConfig,
+) -> tuple[np.ndarray, bool]:
+    if should_apply_vertical_exaggeration(channel_code, plot_type, plot_cfg):
+        return y * plot_cfg.vertical_exaggeration_factor, True
+    return y, False
+
+
+def vertical_exaggeration_metadata_for_stream(
+    stream: Stream,
+    plot_type: str,
+    plot_cfg: PlotConfig,
+) -> dict:
+    st = group_3c_for_plot(stream)
+    applied_channels = [
+        tr.stats.channel
+        for tr in st
+        if should_apply_vertical_exaggeration(tr.stats.channel, plot_type, plot_cfg)
+    ]
+
+    return {
+        "enabled": bool(applied_channels),
+        "channels": applied_channels,
+        "factor": float(plot_cfg.vertical_exaggeration_factor) if applied_channels else 1.0,
+        "apply_to": plot_cfg.vertical_exaggeration_apply_to,
+    }
+
 
 def save_figure_multi_format(fig, basepath_no_ext: Path, formats: Iterable[str], dpi: int) -> list[Path]:
     saved_files: list[Path] = []
@@ -845,6 +943,7 @@ def write_plot_metadata(
     station_req: StationRequest,
     event: EventInfo,
     stream: Stream,
+    plot_cfg: PlotConfig,
     plot_type: str,
     tick_major_s: float,
     tick_minor_s: float,
@@ -896,11 +995,11 @@ def write_plot_metadata(
         "processing": {
             "filtered": False,
             "filter": None,
-            "vertical_exaggeration": {
-                "enabled": False,
-                "channels": [],
-                "factor": 1.0,
-            },
+            "vertical_exaggeration": vertical_exaggeration_metadata_for_stream(
+                st,
+                plot_type,
+                plot_cfg,
+            ),
         },
     }
 
@@ -928,7 +1027,7 @@ def plot_full_station(
     print(f"DEBUG full plot plot_picks = {plot_picks}")
     st = group_3c_for_plot(stream)
     if len(st) == 0:
-        return
+        return []
 
     fig, axes = plt.subplots(
         len(st), 1,
@@ -943,8 +1042,19 @@ def plot_full_station(
         x = get_relative_time_axis(trp)
         y = trp.data.astype(np.float64)
 
+        y, ve_applied = apply_vertical_exaggeration_if_needed(
+            y,
+            tr.stats.channel,
+            "full",
+            plot_cfg,
+        )
+
+        channel_label = tr.stats.channel
+        if ve_applied:
+            channel_label = f"{tr.stats.channel} x{plot_cfg.vertical_exaggeration_factor:g}"
+
         ax.plot(x, y, color="black", lw=plot_cfg.line_width)
-        ax.set_ylabel(tr.stats.channel, rotation=0, labelpad=28, fontsize=10)
+        ax.set_ylabel(channel_label, rotation=0, labelpad=28, fontsize=10)
         ax.margins(x=0)
 
         style_time_axis(
@@ -1012,6 +1122,17 @@ def plot_zoom_around_pick(
         x = get_relative_time_axis(trp)
         y = trp.data.astype(np.float64)
 
+        y, ve_applied = apply_vertical_exaggeration_if_needed(
+            y,
+            tr.stats.channel,
+            "zoom",
+            plot_cfg,
+        )
+
+        channel_label = tr.stats.channel
+        if ve_applied:
+            channel_label = f"{tr.stats.channel} x{plot_cfg.vertical_exaggeration_factor:g}"
+
         x_pick = pick_relative_seconds(tr, pick_time)
         xmin = x_pick - zoom_half_width_s
         xmax = x_pick + zoom_half_width_s
@@ -1024,7 +1145,7 @@ def plot_zoom_around_pick(
                 transform=ax.transAxes,
                 ha="center", va="center", fontsize=11
             )
-            ax.set_ylabel(tr.stats.channel, rotation=0, labelpad=28, fontsize=10)
+            ax.set_ylabel(channel_label, rotation=0, labelpad=28, fontsize=10)
             continue
 
         ax.plot(x[mask], y[mask], color="black", lw=plot_cfg.line_width)
@@ -1045,7 +1166,7 @@ def plot_zoom_around_pick(
             )
 
         ax.set_xlim(xmin, xmax)
-        ax.set_ylabel(tr.stats.channel, rotation=0, labelpad=28, fontsize=10)
+        ax.set_ylabel(channel_label, rotation=0, labelpad=28, fontsize=10)
 
         style_time_axis(
             ax,
@@ -1269,6 +1390,7 @@ def process_event_stations(
                 zoom_level=None,
                 zoom_reference_phase=None,
                 zoom_reference_time=None,
+                plot_cfg=plot_cfg,
             )
 
         if make_zoom and p_pick is not None:
@@ -1315,26 +1437,8 @@ def process_event_stations(
                     zoom_level=level_name,
                     zoom_reference_phase="P",
                     zoom_reference_time=p_pick,
+                    plot_cfg=plot_cfg,
                 )
-
-            p_rel = relative_seconds_from_first_sample(st, p_pick)
-
-            write_plot_metadata(
-                basepath_no_ext=p_base,
-                saved_files=saved_files,
-                station_req=sta,
-                event=event,
-                stream=st,
-                plot_type="zoom",
-                tick_major_s=plot_cfg.zoom_major_tick_s,
-                tick_minor_s=plot_cfg.zoom_minor_tick_s,
-                window_start_relative_s=p_rel - download_cfg.zoom_half_width_s,
-                window_end_relative_s=p_rel + download_cfg.zoom_half_width_s,
-                plot_picks=plot_picks,
-                zoom_level="single",
-                zoom_reference_phase="P",
-                zoom_reference_time=p_pick,
-            )
 
         if make_zoom and s_pick is not None:
             s_rel = relative_seconds_from_first_sample(st, s_pick)
@@ -1380,26 +1484,8 @@ def process_event_stations(
                     zoom_level=level_name,
                     zoom_reference_phase="S",
                     zoom_reference_time=s_pick,
+                    plot_cfg=plot_cfg,
                 )
-
-            s_rel = relative_seconds_from_first_sample(st, s_pick)
-
-            write_plot_metadata(
-                basepath_no_ext=s_base,
-                saved_files=saved_files,
-                station_req=sta,
-                event=event,
-                stream=st,
-                plot_type="zoom",
-                tick_major_s=plot_cfg.zoom_major_tick_s,
-                tick_minor_s=plot_cfg.zoom_minor_tick_s,
-                window_start_relative_s=s_rel - download_cfg.zoom_half_width_s,
-                window_end_relative_s=s_rel + download_cfg.zoom_half_width_s,
-                plot_picks=plot_picks,
-                zoom_level="single",
-                zoom_reference_phase="S",
-                zoom_reference_time=s_pick,
-            )
 
         print(f"[OK] Elaborata stazione {tag}")
 
@@ -1432,6 +1518,27 @@ def main() -> None:
     cfg_dict = load_json_config(args.config)
     zoom_level_presets = load_zoom_level_presets(cfg_dict)
     download_cfg, plot_cfg, tt_cfg = build_configs(cfg_dict)
+    if args.vertical_exaggeration:
+        plot_cfg.vertical_exaggeration_enabled = True
+
+    if args.ve_factor is not None:
+        plot_cfg.vertical_exaggeration_factor = float(args.ve_factor)
+
+    if args.ve_channels is not None:
+        parsed = parse_csv_upper(args.ve_channels)
+        if parsed:
+            plot_cfg.vertical_exaggeration_channel_suffixes = parsed
+
+    if args.ve_apply_to is not None:
+        plot_cfg.vertical_exaggeration_apply_to = args.ve_apply_to.lower()
+
+    print(
+        "[VERTICAL EXAGGERATION] "
+        f"enabled={plot_cfg.vertical_exaggeration_enabled} "
+        f"factor={plot_cfg.vertical_exaggeration_factor} "
+        f"channels={plot_cfg.vertical_exaggeration_channel_suffixes} "
+        f"apply_to={plot_cfg.vertical_exaggeration_apply_to}"
+    )
 
     zoom_levels = parse_zoom_levels_arg(args.zoom_levels)
 

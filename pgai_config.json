@@ -19,7 +19,13 @@
     "zoom_minor_tick_s": 0.01,
     "draw_major_grid": true,
     "draw_minor_grid": true,
-    "pick_line_width": 1.2
+    "pick_line_width": 1.2,
+    "vertical_exaggeration": {
+        "enabled": false,
+        "factor": 3.0,
+        "channel_suffixes": ["Z"],
+        "apply_to": "zoom"
+    }
   },
   "travel_time": {
     "enabled": true,
