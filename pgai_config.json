@@ -11,7 +11,7 @@
   "plotting": {
     "figsize": [20, 10],
     "dpi": 800,
-    "formats": ["png", "pdf"],
+    "formats": ["png", "svg"], 
     "line_width": 0.7,
     "full_major_tick_s": 5.0,
     "full_minor_tick_s": 0.5,
@@ -21,8 +21,8 @@
     "draw_minor_grid": true,
     "pick_line_width": 1.2,
     "vertical_exaggeration": {
-        "enabled": false,
-        "factor": 3.0,
+        "enabled": true,
+        "factor": 4.0,
         "channel_suffixes": ["Z"],
         "apply_to": "zoom"
     }

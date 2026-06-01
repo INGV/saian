@@ -71,7 +71,7 @@ class DownloadConfig:
 class PlotConfig:
     figsize: tuple[float, float] = (20.0, 10.0)
     dpi: int = 800
-    formats: tuple[str, ...] = ("png", "pdf")
+    formats: tuple[str, ...] = ("png", "pdf", "svg") # Aggiunto svg come default
     line_width: float = 0.7
 
     # full plot
@@ -122,7 +122,7 @@ DEFAULT_CONFIG = {
     "plotting": {
         "figsize": [20, 10],
         "dpi": 800,
-        "formats": ["png", "pdf"],
+        "formats": ["png", "pdf", "svg"], # Aggiunto svg
         "line_width": 0.7,
         "full_major_tick_s": 0.1,
         "full_minor_tick_s": 0.01,
@@ -196,7 +196,8 @@ def stationxml_cache_filename(net: str, sta: str, loc: str) -> str:
 
 
 def get_relative_time_axis(trace: Trace) -> np.ndarray:
-    return np.arange(trace.stats.npts, dtype=float) * trace.stats.delta
+    # CORREZIONE: linspace previene accumulo di errori sui tempi lunghi rispetto ad arange
+    return np.linspace(0, trace.stats.npts * trace.stats.delta, trace.stats.npts, endpoint=False)
 
 
 def pick_relative_seconds(trace: Trace, pick_time: UTCDateTime) -> float:
@@ -235,10 +236,6 @@ def load_json_config(path: Optional[str]) -> dict:
     return deep_update(DEFAULT_CONFIG, user_cfg)
 
 def load_ai_picks_json(path: Optional[str]) -> dict[tuple[str, str, str], dict]:
-    """
-    Carica il JSON restituito dalla AI e costruisce una mappa
-    (network, station, channel_prefix) -> dict pick
-    """
     if path is None:
         return {}
 
@@ -278,7 +275,7 @@ def build_configs(cfg_dict: dict) -> tuple[DownloadConfig, PlotConfig, TravelTim
     pcfg = PlotConfig(
         figsize=(float(figsize[0]), float(figsize[1])),
         dpi=int(p.get("dpi", 800)),
-        formats=tuple(str(x).lower() for x in p.get("formats", ["png", "pdf"])),
+        formats=tuple(str(x).lower() for x in p.get("formats", ["png", "pdf", "svg"])),
         line_width=float(p.get("line_width", 0.7)),
         full_major_tick_s=float(p.get("full_major_tick_s", 0.1)),
         full_minor_tick_s=float(p.get("full_minor_tick_s", 0.01)),
@@ -326,13 +323,6 @@ def load_zoom_level_presets(cfg_dict: dict) -> dict[str, ZoomLevelPreset]:
 
 
 def parse_zoom_levels_arg(value: Optional[str]) -> list[str]:
-    """
-    Esempi validi:
-      None -> ["single"]
-      "single"
-      "context,fine"
-      "all"
-    """
     if value is None or not value.strip():
         return ["single"]
 
@@ -349,7 +339,6 @@ def parse_zoom_levels_arg(value: Optional[str]) -> list[str]:
             f"Valori ammessi: {sorted(valid)} oppure 'all'"
         )
 
-    # dedup preservando l'ordine
     out: list[str] = []
     for token in tokens:
         if token not in out:
@@ -364,12 +353,7 @@ def iter_requested_zoom_specs(
     plot_cfg: PlotConfig,
     zoom_level_presets: dict[str, ZoomLevelPreset],
 ) -> list[tuple[str, float, float, float]]:
-    """
-    Restituisce tuple:
-      (level_name, half_width_s, major_tick_s, minor_tick_s)
-    """
     out = []
-
     for level_name in zoom_levels:
         if level_name == "single":
             out.append((
@@ -386,7 +370,6 @@ def iter_requested_zoom_specs(
                 float(preset.major_tick_s),
                 float(preset.minor_tick_s),
             ))
-
     return out
 
 
@@ -413,15 +396,6 @@ def parse_event_arg(event_arg: str) -> EventInfo:
 
 
 def parse_stations_arg(stations_arg: str) -> list[StationRequest]:
-    """
-    Formati supportati:
-      NET.STA.CH
-      NET.STA.LOC.CH
-    Esempi:
-      IV.AQU.HH
-      IV.AQU.--.HH
-      IV.MTRA.BH
-    """
     result: list[StationRequest] = []
 
     for token in stations_arg.split(","):
@@ -652,9 +626,6 @@ def get_or_load_stationxml(
     return inv, xml_path, False
 
 def get_station_coordinates(inv: Inventory) -> tuple[float, float, float]:
-    """
-    Restituisce lat, lon, elev_m dalla prima stazione trovata nell'Inventory.
-    """
     if len(inv.networks) == 0 or len(inv.networks[0].stations) == 0:
         raise ValueError("Inventory senza stazioni")
 
@@ -663,9 +634,6 @@ def get_station_coordinates(inv: Inventory) -> tuple[float, float, float]:
 
 
 def load_cake_model_safe(model_name: str):
-    """
-    Carica il modello Cake richiesto, con fallback al default Pyrocko.
-    """
     try:
         model = cake.load_model(model_name)
         print(f"[OK] Cake model loaded: {model_name}")
@@ -689,10 +657,6 @@ def theoretical_phase_pick(
     phase_name: str,
     tt_cfg: TravelTimeConfig,
 ) -> Optional[UTCDateTime]:
-    """
-    Calcola il pick teorico assoluto per una fase, usando una lista di
-    candidati e scegliendo il primo arrivo disponibile.
-    """
 
     dist_deg = locations2degrees(
         lat1=event_lat,
@@ -701,7 +665,6 @@ def theoretical_phase_pick(
         long2=station_lon,
     )
 
-    # Fasi da provare: prima quelle locali/crostali, poi fallback più generici
     if phase_name.upper() == "P":
         candidates = ["Pg", "p", "P"]
     elif phase_name.upper() == "S":
@@ -761,7 +724,7 @@ def save_per_channel_mseed(stream: Stream, station_out_dir: Path) -> None:
 
 
 # ============================================================
-# PLOTTING
+# PLOTTING E AGC REFACTORING
 # ============================================================
 
 def style_time_axis(
@@ -834,10 +797,7 @@ def agc_normalize(y: np.ndarray, sample_rate: float, window_seconds: float, damp
     if window_samples < 1: window_samples = 1
 
     # Calcolo energia locale (RMS) con finestra mobile
-    # Usiamo il modulo 'bottleneck' se installato per performance estreme,
-    # altrimenti un array rolling medio va bene.
     sq = np.square(y)
-    # Calcolo della media mobile (windowing)
     kernel = np.ones(window_samples) / window_samples
     rms = np.sqrt(np.convolve(sq, kernel, mode='same'))
 
@@ -857,7 +817,7 @@ def save_figure_multi_format(fig, basepath_no_ext: Path, formats: Iterable[str],
         if fmt.lower() == "png":
             fig.savefig(out_file, dpi=dpi, bbox_inches="tight")
         else:
-            fig.savefig(out_file, bbox_inches="tight")
+            fig.savefig(out_file, bbox_inches="tight", format=fmt.lower()) # Gestione nativa SVG/PDF
 
         saved_files.append(out_file)
     return saved_files
@@ -1003,13 +963,13 @@ def plot_full_station(
         trp = preprocess_trace_for_plot(tr)
         x = get_relative_time_axis(trp)
         y = trp.data.astype(np.float64)
+        channel_label = tr.stats.channel
         suffix = tr.stats.channel[-1].upper()
 
-        if plot_cfg.vertical_exaggeration_enabled:
-            # Applica AGC
+        if plot_cfg.vertical_exaggeration_enabled and (plot_cfg.vertical_exaggeration_apply_to in ["full", "all"]):
+            # Applica AGC con la nuova logica
             y = agc_normalize(y, tr.stats.sampling_rate, 0.5)
 
-            # ESAGERAZIONE VERTICALE: Se è la componente Z, moltiplica per il fattore
             if suffix in plot_cfg.vertical_exaggeration_channel_suffixes:
                 y *= plot_cfg.vertical_exaggeration_factor
                 channel_label = f"{tr.stats.channel} (AGC x{plot_cfg.vertical_exaggeration_factor})"
@@ -1084,16 +1044,17 @@ def plot_zoom_around_pick(
         trp = preprocess_trace_for_plot(tr)
         x = get_relative_time_axis(trp)
         y = trp.data.astype(np.float64)
-
         channel_label = tr.stats.channel
+        suffix = tr.stats.channel[-1].upper()
 
-        if plot_cfg.vertical_exaggeration_enabled:
-            y = agc_normalize(
-                y,
-                tr.stats.sampling_rate,
-                0.5
-            )
-            channel_label = f"{tr.stats.channel} (AGC)"
+        if plot_cfg.vertical_exaggeration_enabled and (plot_cfg.vertical_exaggeration_apply_to in ["zoom", "all"]):
+            y = agc_normalize(y, tr.stats.sampling_rate, 0.5)
+
+            if suffix in plot_cfg.vertical_exaggeration_channel_suffixes:
+                y *= plot_cfg.vertical_exaggeration_factor
+                channel_label = f"{tr.stats.channel} (AGC x{plot_cfg.vertical_exaggeration_factor})"
+            else:
+                channel_label = f"{tr.stats.channel} (AGC)"
 
         x_pick = pick_relative_seconds(tr, pick_time)
         xmin = x_pick - zoom_half_width_s
@@ -1164,19 +1125,10 @@ def resolve_reference_picks(
     cake_model,
     ai_entry: Optional[dict] = None
 ) -> tuple[Optional[UTCDateTime], Optional[UTCDateTime]]:
-    """
-    Usa i pick osservati (AI o CLI) se forniti; se mancanti, prova a calcolare i teorici.
-    AI JSON
-    ↓
-    CLI --pick-p / --pick-s
-    ↓
-    theoretical Cake
-    """
     origin = ensure_utc(event.origin_time_iso)
     if origin is None:
         raise ValueError("origin_time_iso obbligatorio")
 
-    # priorità 1: AI
     p_pick = None
     s_pick = None
 
@@ -1191,7 +1143,6 @@ def resolve_reference_picks(
             s_pick = ensure_utc(s_ai["time"])
             print(f"[AI] pick S = {s_pick}")
 
-    # priorità 2: CLI
     if p_pick is None:
         p_pick = ensure_utc(event.pick_p_iso)
 
@@ -1280,7 +1231,6 @@ def process_event_stations(
         )
         sta_dir = out_root / tag
 
-        # 1) StationXML full con cache locale in stations_xml/
         try:
             inv, xml_path, loaded_from_cache = get_or_load_stationxml(
                 client=client,
@@ -1303,7 +1253,6 @@ def process_event_stations(
             ai_entry
         )
 
-        # 2) Waveforms
         try:
             st = download_station_stream(client, sta, starttime, endtime)
         except Exception as exc:
@@ -1466,7 +1415,6 @@ def main() -> None:
 
     print(f"[RUN MODE] full={args.full} zoom={args.zoom} plot_picks={args.plot_picks}")
 
-    # scrittura config default
     if args.write_default_config:
         out = Path(args.write_default_config)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -1477,35 +1425,28 @@ def main() -> None:
         print(f"[OK] Scritto file di configurazione di esempio: {out}")
         return
 
-    # controlli CLI
     if not args.event or not args.stations:
         parser.error("--event e --stations sono obbligatori (tranne quando usi --write-default-config)")
 
-    # config
     cfg_dict = load_json_config(args.config)
 
     zoom_level_presets = load_zoom_level_presets(cfg_dict)
 
     download_cfg, plot_cfg, tt_cfg = build_configs(cfg_dict)
 
-    # livelli zoom
     zoom_levels = parse_zoom_levels_arg(args.zoom_levels)
     print(f"[ZOOM LEVELS] {zoom_levels}")
 
-    # pick AI
     ai_picks = load_ai_picks_json(args.ai_picks_json)
 
-    # modello Cake
     cake_model = None
     if tt_cfg.enabled:
         cake_model = load_cake_model_safe(tt_cfg.model_name)
 
-    # evento
     event = parse_event_arg(args.event)
     event.pick_p_iso = args.pick_p
     event.pick_s_iso = args.pick_s
 
-    # stazioni
     stations = parse_stations_arg(args.stations)
 
     process_event_stations(
