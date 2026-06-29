@@ -11,15 +11,19 @@
   "plotting": {
     "figsize": [20, 10],
     "dpi": 800,
-    "formats": ["png", "pdf"],
+    "formats": ["png"],
     "line_width": 0.7,
     "full_major_tick_s": 5.0,
     "full_minor_tick_s": 0.5,
-    "zoom_major_tick_s": 0.2,
+    "zoom_major_tick_s": 0.5,
     "zoom_minor_tick_s": 0.01,
     "draw_major_grid": true,
     "draw_minor_grid": true,
-    "pick_line_width": 1.2
+    "pick_line_width": 1.2,
+    "expand_dynamics": {
+        "enabled": true,
+        "window_s": 0.5
+    }
   },
   "travel_time": {
     "enabled": true,
