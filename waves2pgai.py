@@ -12,7 +12,7 @@ from matplotlib.ticker import MultipleLocator, FormatStrFormatter, AutoMinorLoca
 from obspy import Stream, Trace, UTCDateTime, read_inventory
 from obspy.clients.fdsn import Client
 from obspy.core.inventory import Inventory
-from obspy.geodetics import locations2degrees
+from obspy.geodetics import locations2degrees, kilometers2degrees
 from pyrocko import cake
 
 
@@ -24,7 +24,7 @@ from pyrocko import cake
 class StationRequest:
     network: str
     station: str
-    channel_prefix: str   # es. HH, HN, BH
+    channel_prefix: str  # es. HH, HN, BH
     location: str = "*"
 
     @property
@@ -52,7 +52,8 @@ class EventInfo:
     depth_km: float
     pick_p_iso: Optional[str] = None
     pick_s_iso: Optional[str] = None
-
+    event_id: Optional[str] = None     # <--- NUOVO
+    origin_id: Optional[str] = None    # <--- NUOVO
 
 @dataclass
 class DownloadConfig:
@@ -69,7 +70,7 @@ class DownloadConfig:
 class PlotConfig:
     figsize: tuple[float, float] = (20.0, 10.0)
     dpi: int = 800
-    formats: tuple[str, ...] = ("png", "pdf", "svg") 
+    formats: tuple[str, ...] = ("png", "pdf", "svg")
     line_width: float = 0.7
 
     full_major_tick_s: float = 5.0
@@ -85,7 +86,8 @@ class PlotConfig:
     vertical_exaggeration_enabled: bool = False
     vertical_exaggeration_factor: float = 3.0
     vertical_exaggeration_channel_suffixes: tuple[str, ...] = ("Z",)
-    vertical_exaggeration_apply_to: str = "zoom"  
+    vertical_exaggeration_apply_to: str = "zoom"
+
 
 @dataclass
 class TravelTimeConfig:
@@ -93,11 +95,13 @@ class TravelTimeConfig:
     model_name: str = "ak135-f-continental.m"
     receiver_depth_km: float = 0.0
 
+
 @dataclass
 class ZoomLevelPreset:
     half_width_s: float
     major_tick_s: float
     minor_tick_s: float
+
 
 # ============================================================
 # DEFAULT CONFIG JSON-STYLE
@@ -116,7 +120,7 @@ DEFAULT_CONFIG = {
     "plotting": {
         "figsize": [20, 10],
         "dpi": 800,
-        "formats": ["png", "pdf", "svg"], 
+        "formats": ["png", "pdf", "svg"],
         "line_width": 0.7,
         "full_major_tick_s": 5.0,
         "full_minor_tick_s": 0.5,
@@ -228,6 +232,7 @@ def load_json_config(path: Optional[str]) -> dict:
         user_cfg = json.load(f)
     return deep_update(DEFAULT_CONFIG, user_cfg)
 
+
 def load_ai_picks_json(path: Optional[str]) -> dict[tuple[str, str, str], dict]:
     if path is None:
         return {}
@@ -294,6 +299,7 @@ def build_configs(cfg_dict: dict) -> tuple[DownloadConfig, PlotConfig, TravelTim
 
     return dcfg, pcfg, tcfg
 
+
 def load_zoom_level_presets(cfg_dict: dict) -> dict[str, ZoomLevelPreset]:
     defaults = {
         "context": ZoomLevelPreset(half_width_s=3.0, major_tick_s=0.5, minor_tick_s=0.1),
@@ -341,10 +347,10 @@ def parse_zoom_levels_arg(value: Optional[str]) -> list[str]:
 
 
 def iter_requested_zoom_specs(
-    zoom_levels: list[str],
-    download_cfg: DownloadConfig,
-    plot_cfg: PlotConfig,
-    zoom_level_presets: dict[str, ZoomLevelPreset],
+        zoom_levels: list[str],
+        download_cfg: DownloadConfig,
+        plot_cfg: PlotConfig,
+        zoom_level_presets: dict[str, ZoomLevelPreset],
 ) -> list[tuple[str, float, float, float]]:
     out = []
     for level_name in zoom_levels:
@@ -385,8 +391,9 @@ def parse_event_arg(event_arg: str) -> EventInfo:
         latitude=float(lat),
         longitude=float(lon),
         depth_km=float(dep),
+        event_id="manual",   # <--- NUOVO
+        origin_id="manual"   # <--- NUOVO
     )
-
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -396,99 +403,85 @@ def build_arg_parser() -> argparse.ArgumentParser:
         )
     )
 
-    # Aggiunti argomenti per il download dinamico dell'evento
     parser.add_argument(
-        "--eventid",
-        required=False,
-        default=None,
-        help="ID dell'evento nel catalogo FDSN (es. 34523211) per scaricare automaticamente l'origin.",
+        "--eventid", required=False, default=None,
+        help="ID dell'evento nel catalogo FDSN (es. 34523211).",
     )
     parser.add_argument(
-        "--originid",
-        required=False,
-        default=None,
-        help="ID specifico della localizzazione (es. 123456). Se omesso, usa la preferred origin dell'eventid.",
+        "--originid", required=False, default=None,
+        help="ID specifico della localizzazione (es. 123456).",
+    )
+    parser.add_argument(
+        "--event", required=False, default=None,
+        help='Evento testuale nel formato "OT,LAT,LON,DEP"',
     )
 
+    # ----------------------------------------------------
+    # NUOVI ARGOMENTI PER LA RICERCA GEOSPAZIALE
+    # ----------------------------------------------------
     parser.add_argument(
-        "--event",
-        required=False,
-        default=None,
-        help='Evento testuale nel formato "OT,LAT,LON,DEP" (da usare se NON si specifica --eventid)',
+        "--networks", required=False, default=None,
+        help="Reti sismiche separate da virgola (es. 'IV,IT') per ricerca automatica FDSN",
     )
     parser.add_argument(
-        "--stations",
-        required=False,
-        help='Lista stazioni nel formato "NET.STA.CH,NET.STA.CH" '
-             'oppure "NET.STA.LOC.CH,NET.STA.LOC.CH"',
+        "--distances", required=False, default=None,
+        help="Corona di ricerca in km (es. '0,50' per min,max)",
     )
     parser.add_argument(
-        "--pick-p",
-        default=None,
+        "--channels", required=False, default="*",
+        help="Canali da estrarre se si usa la ricerca geografica (es. 'HH,HN'). Default: '*'",
+    )
+    # ----------------------------------------------------
+
+    parser.add_argument(
+        "--stations", required=False,
+        help='Lista stazioni statica nel formato "NET.STA.CH,NET.STA.CH"',
+    )
+    parser.add_argument(
+        "--pick-p", default=None,
         help="Tempo assoluto pick P in ISO completo",
     )
     parser.add_argument(
-        "--pick-s",
-        default=None,
+        "--pick-s", default=None,
         help="Tempo assoluto pick S in ISO completo",
     )
     parser.add_argument(
-        "--config",
-        default=None,
+        "--config", default=None,
         help="Percorso file JSON di configurazione",
     )
     parser.add_argument(
-        "--write-default-config",
-        default=None,
+        "--write-default-config", default=None,
         help="Scrive un file JSON di esempio e termina",
     )
     parser.add_argument(
-        "--version",
-        action="version",
-        version="waves2pgai 0.1"
+        "--version", action="version", version="waves2pgai 0.1"
     )
     parser.add_argument(
-        "--zoom",
-        action="store_true",
+        "--zoom", action="store_true",
         help="Genera gli zoom intorno ai pick P e/o S, se disponibili",
     )
     parser.add_argument(
-        "--full",
-        action="store_true",
+        "--full", action="store_true",
         help="Genera il plot completo della finestra waveform",
     )
     parser.add_argument(
-        "--plot-picks",
-        action="store_true",
+        "--plot-picks", action="store_true",
         help="Disegna i pick P/S sui plot, se disponibili",
     )
-
     parser.add_argument(
-        "--ai-picks-json",
-        default=None,
+        "--ai-picks-json", default=None,
         help="File JSON con i pick restituiti dalla AI generativa"
     )
-
     parser.add_argument(
-        "--zoom-levels",
-        default=None,
-        help=(
-            "Livelli di zoom separati da virgola. "
-            "Valori ammessi: single,context,fine,ultrafine,all. "
-            "Se omesso e usi --zoom, viene usato 'single' (comportamento legacy)."
-        ),
+        "--zoom-levels", default=None,
+        help="Livelli di zoom separati da virgola (es. context,fine,ultrafine,all).",
     )
-
     parser.add_argument(
-        "--agc",
-        action="store_true",
+        "--agc", action="store_true",
         help="Apply AGC normalization for visualization"
     )
-
     parser.add_argument(
-        "--agc-window",
-        type=float,
-        default=0.5,
+        "--agc-window", type=float, default=0.5,
         help="AGC window length in seconds"
     )
 
@@ -522,13 +515,11 @@ def parse_stations_arg(stations_arg: str) -> list[StationRequest]:
                 channel_prefix=ch,
             )
         )
-    if not result:
-        raise ValueError("Nessuna stazione valida in --stations")
     return result
 
 
 # ============================================================
-# CLIENT & FDSN EVENTS
+# CLIENT & FDSN EVENTS / STATIONS
 # ============================================================
 
 def build_client(cfg: DownloadConfig) -> Client:
@@ -536,14 +527,10 @@ def build_client(cfg: DownloadConfig) -> Client:
         return Client(base_url=cfg.base_url, user=cfg.user, password=cfg.password)
     return Client(base_url=cfg.base_url)
 
+
 def fetch_event_info_from_fdsn(client: Client, eventid: str, originid: Optional[str] = None) -> EventInfo:
-    """
-    Scarica il catalogo FDSN per un eventid specifico ed estrae l'Origin desiderato.
-    """
     print(f"[FDSN] Download dati evento eventid={eventid} (includeallorigins=True)...")
     try:
-        # CORREZIONE: FDSN di default scarica solo la preferred origin. 
-        # Forziamo il download di TUTTE le origins (e magnitudo).
         cat = client.get_events(
             eventid=eventid,
             includeallorigins=True,
@@ -560,18 +547,20 @@ def fetch_event_info_from_fdsn(client: Client, eventid: str, originid: Optional[
 
     if originid:
         for org in ev.origins:
-            # Match parziale per comodità, es: "142946343" in "smi:.../query?originId=142946343"
             if originid in str(org.resource_id):
                 selected_origin = org
                 break
         if not selected_origin:
-            # Debug immediato se fallisce: vediamo cosa ha scaricato realmente
             available_origins = [str(o.resource_id).split('=')[-1] for o in ev.origins]
             raise ValueError(f"Origin ID '{originid}' non trovato. Origins scaricati: {available_origins}")
         print(f"[OK] Trovato originid={originid}")
     else:
         selected_origin = ev.preferred_origin or ev.origins[0]
         print(f"[OK] Nessun originid specificato, uso origin: {selected_origin.resource_id}")
+
+    # --- NUOVO: Estraiamo l'ID numerico finale dalla stringa FDSN ---
+    actual_origin_id = str(selected_origin.resource_id).split('=')[-1]
+    # ----------------------------------------------------------------
 
     depth_km = (selected_origin.depth / 1000.0) if selected_origin.depth is not None else 0.0
 
@@ -580,14 +569,71 @@ def fetch_event_info_from_fdsn(client: Client, eventid: str, originid: Optional[
         latitude=selected_origin.latitude,
         longitude=selected_origin.longitude,
         depth_km=depth_km,
+        event_id=eventid,            # <--- NUOVO
+        origin_id=actual_origin_id   # <--- NUOVO
     )
+
+
+def fetch_stations_by_distance(client: Client, event: EventInfo, networks: str, distances_str: str, channels: str) -> \
+list[StationRequest]:
+    """
+    Interroga il servizio station di FDSN usando la conversione da km a gradi geodetici
+    per scaricare le stazioni che si trovano nella corona (min, max).
+    """
+    try:
+        min_km, max_km = map(float, distances_str.split(","))
+    except ValueError:
+        raise ValueError("Il parametro --distances deve essere nel formato 'min,max' (es. 0,50)")
+
+    # Conversione standard di obspy da chilometri a gradi sismologici per le API FDSN
+    minradius_deg = kilometers2degrees(min_km)
+    maxradius_deg = kilometers2degrees(max_km)
+
+    print(f"[FDSN] Ricerca stazioni geografica per reti '{networks}'")
+    print(f"       Distanza: {min_km} - {max_km} km (Gradi: {minradius_deg:.3f} - {maxradius_deg:.3f})")
+
+    try:
+        inv = client.get_stations(
+            network=networks,
+            latitude=event.latitude,
+            longitude=event.longitude,
+            minradius=minradius_deg,
+            maxradius=maxradius_deg,
+            level="station"
+        )
+    except Exception as e:
+        raise ValueError(
+            f"Ricerca stazioni per distanza fallita. Il server potrebbe non supportare questa query o nessuna stazione trovata: {e}")
+
+    reqs = []
+    # I canali richiesti dall'utente (es. HH, HN) o "*"
+    requested_channels = [c.strip() for c in channels.split(",") if c.strip()]
+    if not requested_channels:
+        requested_channels = ["*"]
+
+    for net in inv:
+        for sta in net:
+            for ch in requested_channels:
+                reqs.append(
+                    StationRequest(
+                        network=net.code,
+                        station=sta.code,
+                        location="*",
+                        channel_prefix=ch
+                    )
+                )
+
+    print(
+        f"[OK] Discovery spaziale concluso: trovate {len(reqs) // len(requested_channels)} stazioni. Generati {len(reqs)} StationRequest.")
+    return reqs
+
 
 # ============================================================
 # DOWNLOAD WAVEFORMS & STATIONXML
 # ============================================================
-# [Tutte le funzioni qui rimangono invariate]
 
-def download_station_stream(client: Client, station_req: StationRequest, starttime: UTCDateTime, endtime: UTCDateTime) -> Stream:
+def download_station_stream(client: Client, station_req: StationRequest, starttime: UTCDateTime,
+                            endtime: UTCDateTime) -> Stream:
     location = station_req.location if station_req.location != "" else "*"
     channel = station_req.waveform_channel_pattern
 
@@ -605,6 +651,7 @@ def download_station_stream(client: Client, station_req: StationRequest, startti
     st.sort()
     return st
 
+
 def download_stationxml_full(client: Client, station_req: StationRequest) -> Inventory:
     inv = client.get_stations(
         network=station_req.network,
@@ -615,11 +662,14 @@ def download_stationxml_full(client: Client, station_req: StationRequest) -> Inv
     )
     return inv
 
+
 def save_stationxml(inv: Inventory, out_file: Path) -> None:
     out_file.parent.mkdir(parents=True, exist_ok=True)
     inv.write(str(out_file), format="STATIONXML")
 
-def get_or_load_stationxml(client: Client, station_req: StationRequest, cache_dir: Path) -> tuple[Inventory, Path, bool]:
+
+def get_or_load_stationxml(client: Client, station_req: StationRequest, cache_dir: Path) -> tuple[
+    Inventory, Path, bool]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     xml_path = cache_dir / stationxml_cache_filename(station_req.network, station_req.station, station_req.location)
 
@@ -631,11 +681,13 @@ def get_or_load_stationxml(client: Client, station_req: StationRequest, cache_di
     save_stationxml(inv, xml_path)
     return inv, xml_path, False
 
+
 def get_station_coordinates(inv: Inventory) -> tuple[float, float, float]:
     if len(inv.networks) == 0 or len(inv.networks[0].stations) == 0:
         raise ValueError("Inventory senza stazioni")
     sta = inv.networks[0].stations[0]
     return float(sta.latitude), float(sta.longitude), float(sta.elevation)
+
 
 def load_cake_model_safe(model_name: str):
     try:
@@ -646,9 +698,13 @@ def load_cake_model_safe(model_name: str):
         print(f"[WARN] impossibile caricare il modello {model_name}: {exc}. Uso default.")
         return cake.load_model()
 
-def theoretical_phase_pick(model, origin: UTCDateTime, event_lat: float, event_lon: float, event_depth_km: float, station_lat: float, station_lon: float, phase_name: str, tt_cfg: TravelTimeConfig) -> Optional[UTCDateTime]:
+
+def theoretical_phase_pick(model, origin: UTCDateTime, event_lat: float, event_lon: float, event_depth_km: float,
+                           station_lat: float, station_lon: float, phase_name: str, tt_cfg: TravelTimeConfig) -> \
+Optional[UTCDateTime]:
     dist_deg = locations2degrees(lat1=event_lat, long1=event_lon, lat2=station_lat, long2=station_lon)
-    candidates = ["Pg", "p", "P"] if phase_name.upper() == "P" else ["Sg", "s", "S"] if phase_name.upper() == "S" else [phase_name]
+    candidates = ["Pg", "p", "P"] if phase_name.upper() == "P" else ["Sg", "s", "S"] if phase_name.upper() == "S" else [
+        phase_name]
 
     best_ray = None
     best_name = None
@@ -656,7 +712,8 @@ def theoretical_phase_pick(model, origin: UTCDateTime, event_lat: float, event_l
     for cname in candidates:
         try:
             phases = cake.PhaseDef.classic(cname)
-            rays = model.arrivals(phases=phases, distances=[dist_deg], zstart=event_depth_km * 1000.0, zstop=tt_cfg.receiver_depth_km * 1000.0)
+            rays = model.arrivals(phases=phases, distances=[dist_deg], zstart=event_depth_km * 1000.0,
+                                  zstop=tt_cfg.receiver_depth_km * 1000.0)
         except Exception as exc:
             continue
 
@@ -673,11 +730,13 @@ def theoretical_phase_pick(model, origin: UTCDateTime, event_lat: float, event_l
 
     return origin + float(best_ray.t)
 
+
 def save_per_channel_mseed(stream: Stream, station_out_dir: Path) -> None:
     station_out_dir.mkdir(parents=True, exist_ok=True)
     for tr in stream:
         out_file = station_out_dir / channel_filename(tr)
         tr.write(str(out_file), format="MSEED")
+
 
 # ============================================================
 # PLOTTING
@@ -694,15 +753,20 @@ def style_time_axis(ax, major_tick_s: float, minor_tick_s: float, draw_major_gri
     if draw_major_grid: ax.grid(True, which="major", axis="x", alpha=0.30)
     if draw_minor_grid: ax.grid(True, which="minor", axis="x", alpha=0.12)
 
-def add_pick_lines(ax, tr: Trace, p_pick: Optional[UTCDateTime], s_pick: Optional[UTCDateTime], line_width: float) -> None:
+
+def add_pick_lines(ax, tr: Trace, p_pick: Optional[UTCDateTime], s_pick: Optional[UTCDateTime],
+                   line_width: float) -> None:
     if p_pick is not None:
         xp = pick_relative_seconds(tr, p_pick)
         ax.axvline(xp, color="tab:red", lw=line_width, ls="--", alpha=0.95)
-        ax.text(xp, 0.97, "P", color="tab:red", transform=ax.get_xaxis_transform(), ha="left", va="top", fontsize=9, fontweight="bold")
+        ax.text(xp, 0.97, "P", color="tab:red", transform=ax.get_xaxis_transform(), ha="left", va="top", fontsize=9,
+                fontweight="bold")
     if s_pick is not None:
         xs = pick_relative_seconds(tr, s_pick)
         ax.axvline(xs, color="tab:blue", lw=line_width, ls="--", alpha=0.95)
-        ax.text(xs, 0.97, "S", color="tab:blue", transform=ax.get_xaxis_transform(), ha="left", va="top", fontsize=9, fontweight="bold")
+        ax.text(xs, 0.97, "S", color="tab:blue", transform=ax.get_xaxis_transform(), ha="left", va="top", fontsize=9,
+                fontweight="bold")
+
 
 def agc_normalize(y: np.ndarray, sample_rate: float, window_seconds: float, damping: float = 0.05) -> np.ndarray:
     window_samples = int(window_seconds * sample_rate)
@@ -714,25 +778,32 @@ def agc_normalize(y: np.ndarray, sample_rate: float, window_seconds: float, damp
     gain = 1.0 / (rms + damping * avg_rms)
     return y * gain
 
+
 def save_figure_multi_format(fig, basepath_no_ext: Path, formats: Iterable[str], dpi: int) -> list[Path]:
     saved_files: list[Path] = []
     for fmt in formats:
         out_file = basepath_no_ext.parent / f"{basepath_no_ext.name}.{fmt}"
-        if fmt.lower() == "png": fig.savefig(out_file, dpi=dpi, bbox_inches="tight")
-        else: fig.savefig(out_file, bbox_inches="tight", format=fmt.lower())
+        if fmt.lower() == "png":
+            fig.savefig(out_file, dpi=dpi, bbox_inches="tight")
+        else:
+            fig.savefig(out_file, bbox_inches="tight", format=fmt.lower())
         saved_files.append(out_file)
     return saved_files
+
 
 def first_sample_time_for_stream(stream: Stream) -> UTCDateTime:
     st = group_3c_for_plot(stream)
     return min(tr.stats.starttime for tr in st)
 
+
 def last_sample_time_for_stream(stream: Stream) -> UTCDateTime:
     st = group_3c_for_plot(stream)
     return max(tr.stats.endtime for tr in st)
 
+
 def relative_seconds_from_first_sample(stream: Stream, abs_time: UTCDateTime) -> float:
     return float(abs_time - first_sample_time_for_stream(stream))
+
 
 def trace_descriptors_for_metadata(stream: Stream) -> list[dict]:
     st = group_3c_for_plot(stream)
@@ -745,7 +816,12 @@ def trace_descriptors_for_metadata(stream: Stream) -> list[dict]:
         })
     return out
 
-def write_plot_metadata(basepath_no_ext: Path, saved_files: list[Path], station_req: StationRequest, event: EventInfo, stream: Stream, plot_cfg: PlotConfig, plot_type: str, tick_major_s: float, tick_minor_s: float, window_start_relative_s: float, window_end_relative_s: float, plot_picks: bool, zoom_level: Optional[str] = None, zoom_reference_phase: Optional[str] = None, zoom_reference_time: Optional[UTCDateTime] = None) -> None:
+
+def write_plot_metadata(basepath_no_ext: Path, saved_files: list[Path], station_req: StationRequest, event: EventInfo,
+                        stream: Stream, plot_cfg: PlotConfig, plot_type: str, tick_major_s: float, tick_minor_s: float,
+                        window_start_relative_s: float, window_end_relative_s: float, plot_picks: bool,
+                        zoom_level: Optional[str] = None, zoom_reference_phase: Optional[str] = None,
+                        zoom_reference_time: Optional[UTCDateTime] = None) -> None:
     st = group_3c_for_plot(stream)
     if len(st) == 0: return
 
@@ -755,25 +831,33 @@ def write_plot_metadata(basepath_no_ext: Path, saved_files: list[Path], station_
 
     metadata = {
         "files": [p.name for p in saved_files],
-        "station": { "network": station_req.network, "stacode": station_req.station, "location": safe_loc(station_req.location), "channel_code": station_req.channel_prefix },
+        "station": {"network": station_req.network, "stacode": station_req.station,
+                    "location": safe_loc(station_req.location), "channel_code": station_req.channel_prefix},
         "plot": {
             "plot_type": plot_type, "zoom_level": zoom_level, "x_axis_reference": "relative_to_first_sample",
             "first_sample_time": first_sample.isoformat(), "last_sample_time": last_sample.isoformat(),
             "origin_time": origin.isoformat() if origin is not None else None,
-            "window_start_relative_s": float(window_start_relative_s), "window_end_relative_s": float(window_end_relative_s),
-            "duration_s": float(window_end_relative_s - window_start_relative_s), "zoom_reference_phase": zoom_reference_phase,
+            "window_start_relative_s": float(window_start_relative_s),
+            "window_end_relative_s": float(window_end_relative_s),
+            "duration_s": float(window_end_relative_s - window_start_relative_s),
+            "zoom_reference_phase": zoom_reference_phase,
             "zoom_reference_time": zoom_reference_time.isoformat() if zoom_reference_time is not None else None,
             "tick_major_s": float(tick_major_s), "tick_minor_s": float(tick_minor_s), "plot_picks": bool(plot_picks)
         },
-        "sampling": { "sample_rate_hz": float(st[0].stats.sampling_rate), "delta_s": float(st[0].stats.delta) },
+        "sampling": {"sample_rate_hz": float(st[0].stats.sampling_rate), "delta_s": float(st[0].stats.delta)},
         "channels": [tr.stats.channel for tr in st], "traces": trace_descriptors_for_metadata(st),
-        "processing": { "filtered": False, "filter": None, "amplitude_processing": { "method": "agc", "window_seconds": 0.2, "applied_channels": [tr.stats.channel for tr in st] } },
+        "processing": {"filtered": False, "filter": None,
+                       "amplitude_processing": {"method": "agc", "window_seconds": 0.2,
+                                                "applied_channels": [tr.stats.channel for tr in st]}},
     }
     meta_path = basepath_no_ext.parent / f"{basepath_no_ext.name}.meta.json"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
-def plot_full_station(stream: Stream, event: EventInfo, station_req: StationRequest, plot_cfg: PlotConfig, out_basepath_no_ext: Path, p_pick: Optional[UTCDateTime] = None, s_pick: Optional[UTCDateTime] = None, plot_picks: bool = False) -> list[Path]:
+
+def plot_full_station(stream: Stream, event: EventInfo, station_req: StationRequest, plot_cfg: PlotConfig,
+                      out_basepath_no_ext: Path, p_pick: Optional[UTCDateTime] = None,
+                      s_pick: Optional[UTCDateTime] = None, plot_picks: bool = False) -> list[Path]:
     st = group_3c_for_plot(stream)
     if len(st) == 0: return []
     fig, axes = plt.subplots(len(st), 1, figsize=plot_cfg.figsize, sharex=False)
@@ -797,7 +881,8 @@ def plot_full_station(stream: Stream, event: EventInfo, station_req: StationRequ
         ax.plot(x, y, color="black", lw=plot_cfg.line_width)
         ax.set_ylabel(channel_label, rotation=0, labelpad=28, fontsize=10)
         ax.margins(x=0)
-        style_time_axis(ax, major_tick_s=plot_cfg.full_major_tick_s, minor_tick_s=plot_cfg.full_minor_tick_s, draw_major_grid=plot_cfg.draw_major_grid, draw_minor_grid=plot_cfg.draw_minor_grid)
+        style_time_axis(ax, major_tick_s=plot_cfg.full_major_tick_s, minor_tick_s=plot_cfg.full_minor_tick_s,
+                        draw_major_grid=plot_cfg.draw_major_grid, draw_minor_grid=plot_cfg.draw_minor_grid)
         if plot_picks: add_pick_lines(ax, tr, p_pick, s_pick, line_width=plot_cfg.pick_line_width)
         ax.yaxis.set_minor_locator(AutoMinorLocator(2))
         ax.tick_params(axis="y", which="major", labelsize=8)
@@ -813,7 +898,11 @@ def plot_full_station(stream: Stream, event: EventInfo, station_req: StationRequ
     plt.close(fig)
     return saved_files
 
-def plot_zoom_around_pick(stream: Stream, station_req: StationRequest, pick_time: UTCDateTime, pick_label: str, plot_cfg: PlotConfig, zoom_half_width_s: float, out_basepath_no_ext: Path, plot_picks: bool = False, zoom_major_tick_s: Optional[float] = None, zoom_minor_tick_s: Optional[float] = None) -> list[Path]:
+
+def plot_zoom_around_pick(stream: Stream, station_req: StationRequest, pick_time: UTCDateTime, pick_label: str,
+                          plot_cfg: PlotConfig, zoom_half_width_s: float, out_basepath_no_ext: Path,
+                          plot_picks: bool = False, zoom_major_tick_s: Optional[float] = None,
+                          zoom_minor_tick_s: Optional[float] = None) -> list[Path]:
     st = group_3c_for_plot(stream)
     if len(st) == 0: return
     fig, axes = plt.subplots(len(st), 1, figsize=plot_cfg.figsize, sharex=False)
@@ -840,18 +929,24 @@ def plot_zoom_around_pick(stream: Stream, station_req: StationRequest, pick_time
         mask = (x >= xmin) & (x <= xmax)
 
         if not np.any(mask):
-            ax.text(0.5, 0.5, "Pick fuori dalla finestra scaricata", transform=ax.transAxes, ha="center", va="center", fontsize=11)
+            ax.text(0.5, 0.5, "Pick fuori dalla finestra scaricata", transform=ax.transAxes, ha="center", va="center",
+                    fontsize=11)
             ax.set_ylabel(channel_label, rotation=0, labelpad=28, fontsize=10)
             continue
 
         ax.plot(x[mask], y[mask], color="black", lw=plot_cfg.line_width)
         if plot_picks:
-            ax.axvline(x_pick, color="tab:red" if pick_label.upper() == "P" else "tab:blue", lw=plot_cfg.pick_line_width, ls="--", alpha=0.95)
-            ax.text(x_pick, 0.97, pick_label.upper(), color="tab:red" if pick_label.upper() == "P" else "tab:blue", transform=ax.get_xaxis_transform(), ha="left", va="top", fontsize=9, fontweight="bold")
+            ax.axvline(x_pick, color="tab:red" if pick_label.upper() == "P" else "tab:blue",
+                       lw=plot_cfg.pick_line_width, ls="--", alpha=0.95)
+            ax.text(x_pick, 0.97, pick_label.upper(), color="tab:red" if pick_label.upper() == "P" else "tab:blue",
+                    transform=ax.get_xaxis_transform(), ha="left", va="top", fontsize=9, fontweight="bold")
 
         ax.set_xlim(xmin, xmax)
         ax.set_ylabel(channel_label, rotation=0, labelpad=28, fontsize=10)
-        style_time_axis(ax, major_tick_s=zoom_major_tick_s if zoom_major_tick_s is not None else plot_cfg.zoom_major_tick_s, minor_tick_s=zoom_minor_tick_s if zoom_minor_tick_s is not None else plot_cfg.zoom_minor_tick_s, draw_major_grid=plot_cfg.draw_major_grid, draw_minor_grid=plot_cfg.draw_minor_grid)
+        style_time_axis(ax,
+                        major_tick_s=zoom_major_tick_s if zoom_major_tick_s is not None else plot_cfg.zoom_major_tick_s,
+                        minor_tick_s=zoom_minor_tick_s if zoom_minor_tick_s is not None else plot_cfg.zoom_minor_tick_s,
+                        draw_major_grid=plot_cfg.draw_major_grid, draw_minor_grid=plot_cfg.draw_minor_grid)
         ax.yaxis.set_minor_locator(AutoMinorLocator(2))
         ax.tick_params(axis="y", which="major", labelsize=8)
         ax.tick_params(axis="y", which="minor", length=2)
@@ -865,7 +960,9 @@ def plot_zoom_around_pick(stream: Stream, station_req: StationRequest, pick_time
     plt.close(fig)
     return saved_files
 
-def resolve_reference_picks(event: EventInfo, inv: Inventory, tt_cfg: TravelTimeConfig, cake_model, ai_entry: Optional[dict] = None) -> tuple[Optional[UTCDateTime], Optional[UTCDateTime]]:
+
+def resolve_reference_picks(event: EventInfo, inv: Inventory, tt_cfg: TravelTimeConfig, cake_model,
+                            ai_entry: Optional[dict] = None) -> tuple[Optional[UTCDateTime], Optional[UTCDateTime]]:
     origin = ensure_utc(event.origin_time_iso)
     if origin is None: raise ValueError("origin_time_iso obbligatorio")
 
@@ -888,13 +985,21 @@ def resolve_reference_picks(event: EventInfo, inv: Inventory, tt_cfg: TravelTime
         return p_pick, s_pick
 
     if p_pick is None:
-        p_pick = theoretical_phase_pick(cake_model, origin=origin, event_lat=event.latitude, event_lon=event.longitude, event_depth_km=event.depth_km, station_lat=sta_lat, station_lon=sta_lon, phase_name="P", tt_cfg=tt_cfg)
+        p_pick = theoretical_phase_pick(cake_model, origin=origin, event_lat=event.latitude, event_lon=event.longitude,
+                                        event_depth_km=event.depth_km, station_lat=sta_lat, station_lon=sta_lon,
+                                        phase_name="P", tt_cfg=tt_cfg)
     if s_pick is None:
-        s_pick = theoretical_phase_pick(cake_model, origin=origin, event_lat=event.latitude, event_lon=event.longitude, event_depth_km=event.depth_km, station_lat=sta_lat, station_lon=sta_lon, phase_name="S", tt_cfg=tt_cfg)
+        s_pick = theoretical_phase_pick(cake_model, origin=origin, event_lat=event.latitude, event_lon=event.longitude,
+                                        event_depth_km=event.depth_km, station_lat=sta_lat, station_lon=sta_lon,
+                                        phase_name="S", tt_cfg=tt_cfg)
 
     return p_pick, s_pick
 
-def process_event_stations(event: EventInfo, stations: Iterable[StationRequest], download_cfg: DownloadConfig, plot_cfg: PlotConfig, tt_cfg: TravelTimeConfig, cake_model, ai_picks: dict, zoom_levels: list[str], zoom_level_presets: dict[str, ZoomLevelPreset], make_full: bool = True, make_zoom: bool = False, plot_picks: bool = False) -> None:
+
+def process_event_stations(event: EventInfo, stations: Iterable[StationRequest], download_cfg: DownloadConfig,
+                           plot_cfg: PlotConfig, tt_cfg: TravelTimeConfig, cake_model, ai_picks: dict,
+                           zoom_levels: list[str], zoom_level_presets: dict[str, ZoomLevelPreset],
+                           make_full: bool = True, make_zoom: bool = False, plot_picks: bool = False) -> None:
     out_root = Path(download_cfg.output_dir)
     out_root.mkdir(parents=True, exist_ok=True)
     stations_xml_dir = out_root / "stations_xml"
@@ -910,16 +1015,16 @@ def process_event_stations(event: EventInfo, stations: Iterable[StationRequest],
     for sta in stations:
         tag = station_tag(sta.network, sta.station, sta.location, sta.channel_prefix)
         ai_entry = ai_picks.get((sta.network, sta.station, sta.channel_prefix), None)
-        # --- NUOVO BLOCCO ---
-        # Se abbiamo caricato dei pick AI (len > 0), ignora le stazioni che non sono nel JSON
+
         if len(ai_picks) > 0 and ai_entry is None:
             print(f"[SKIP] {tag}: Saltata. Non è presente nel file JSON dell'AI.")
             continue
-        # --------------------
+
         sta_dir = out_root / tag
 
         try:
-            inv, xml_path, loaded_from_cache = get_or_load_stationxml(client=client, station_req=sta, cache_dir=stations_xml_dir)
+            inv, xml_path, loaded_from_cache = get_or_load_stationxml(client=client, station_req=sta,
+                                                                      cache_dir=stations_xml_dir)
         except Exception as exc:
             continue
 
@@ -935,26 +1040,54 @@ def process_event_stations(event: EventInfo, stations: Iterable[StationRequest],
 
         if make_full:
             full_base = sta_dir / f"{tag}_full"
-            saved_files = plot_full_station(st, event, sta, plot_cfg, full_base, p_pick=p_pick, s_pick=s_pick, plot_picks=plot_picks)
+            saved_files = plot_full_station(st, event, sta, plot_cfg, full_base, p_pick=p_pick, s_pick=s_pick,
+                                            plot_picks=plot_picks)
             full_window_start = 0.0
             full_window_end = float(last_sample_time_for_stream(st) - first_sample_time_for_stream(st))
-            write_plot_metadata(basepath_no_ext=full_base, saved_files=saved_files, station_req=sta, event=event, stream=st, plot_type="full", tick_major_s=plot_cfg.full_major_tick_s, tick_minor_s=plot_cfg.full_minor_tick_s, window_start_relative_s=full_window_start, window_end_relative_s=full_window_end, plot_picks=plot_picks, zoom_level=None, zoom_reference_phase=None, zoom_reference_time=None, plot_cfg=plot_cfg)
+            write_plot_metadata(basepath_no_ext=full_base, saved_files=saved_files, station_req=sta, event=event,
+                                stream=st, plot_type="full", tick_major_s=plot_cfg.full_major_tick_s,
+                                tick_minor_s=plot_cfg.full_minor_tick_s, window_start_relative_s=full_window_start,
+                                window_end_relative_s=full_window_end, plot_picks=plot_picks, zoom_level=None,
+                                zoom_reference_phase=None, zoom_reference_time=None, plot_cfg=plot_cfg)
 
         if make_zoom and p_pick is not None:
             p_rel = relative_seconds_from_first_sample(st, p_pick)
-            for level_name, half_width_s, major_tick_s, minor_tick_s in iter_requested_zoom_specs(zoom_levels, download_cfg, plot_cfg, zoom_level_presets):
+            for level_name, half_width_s, major_tick_s, minor_tick_s in iter_requested_zoom_specs(zoom_levels,
+                                                                                                  download_cfg,
+                                                                                                  plot_cfg,
+                                                                                                  zoom_level_presets):
                 p_base = sta_dir / f"{tag}_zoom_P" if level_name == "single" else sta_dir / f"{tag}_zoom_P_{level_name}"
-                saved_files = plot_zoom_around_pick(st, sta, p_pick, "P", plot_cfg=plot_cfg, zoom_half_width_s=half_width_s, out_basepath_no_ext=p_base, plot_picks=plot_picks, zoom_major_tick_s=major_tick_s, zoom_minor_tick_s=minor_tick_s)
-                write_plot_metadata(basepath_no_ext=p_base, saved_files=saved_files, station_req=sta, event=event, stream=st, plot_type="zoom", tick_major_s=major_tick_s, tick_minor_s=minor_tick_s, window_start_relative_s=p_rel - half_width_s, window_end_relative_s=p_rel + half_width_s, plot_picks=plot_picks, zoom_level=level_name, zoom_reference_phase="P", zoom_reference_time=p_pick, plot_cfg=plot_cfg)
+                saved_files = plot_zoom_around_pick(st, sta, p_pick, "P", plot_cfg=plot_cfg,
+                                                    zoom_half_width_s=half_width_s, out_basepath_no_ext=p_base,
+                                                    plot_picks=plot_picks, zoom_major_tick_s=major_tick_s,
+                                                    zoom_minor_tick_s=minor_tick_s)
+                write_plot_metadata(basepath_no_ext=p_base, saved_files=saved_files, station_req=sta, event=event,
+                                    stream=st, plot_type="zoom", tick_major_s=major_tick_s, tick_minor_s=minor_tick_s,
+                                    window_start_relative_s=p_rel - half_width_s,
+                                    window_end_relative_s=p_rel + half_width_s, plot_picks=plot_picks,
+                                    zoom_level=level_name, zoom_reference_phase="P", zoom_reference_time=p_pick,
+                                    plot_cfg=plot_cfg)
 
         if make_zoom and s_pick is not None:
             s_rel = relative_seconds_from_first_sample(st, s_pick)
-            for level_name, half_width_s, major_tick_s, minor_tick_s in iter_requested_zoom_specs(zoom_levels, download_cfg, plot_cfg, zoom_level_presets):
+            for level_name, half_width_s, major_tick_s, minor_tick_s in iter_requested_zoom_specs(zoom_levels,
+                                                                                                  download_cfg,
+                                                                                                  plot_cfg,
+                                                                                                  zoom_level_presets):
                 s_base = sta_dir / f"{tag}_zoom_S" if level_name == "single" else sta_dir / f"{tag}_zoom_S_{level_name}"
-                saved_files = plot_zoom_around_pick(st, sta, s_pick, "S", plot_cfg=plot_cfg, zoom_half_width_s=half_width_s, out_basepath_no_ext=s_base, plot_picks=plot_picks, zoom_major_tick_s=major_tick_s, zoom_minor_tick_s=minor_tick_s)
-                write_plot_metadata(basepath_no_ext=s_base, saved_files=saved_files, station_req=sta, event=event, stream=st, plot_type="zoom", tick_major_s=major_tick_s, tick_minor_s=minor_tick_s, window_start_relative_s=s_rel - half_width_s, window_end_relative_s=s_rel + half_width_s, plot_picks=plot_picks, zoom_level=level_name, zoom_reference_phase="S", zoom_reference_time=s_pick, plot_cfg=plot_cfg)
+                saved_files = plot_zoom_around_pick(st, sta, s_pick, "S", plot_cfg=plot_cfg,
+                                                    zoom_half_width_s=half_width_s, out_basepath_no_ext=s_base,
+                                                    plot_picks=plot_picks, zoom_major_tick_s=major_tick_s,
+                                                    zoom_minor_tick_s=minor_tick_s)
+                write_plot_metadata(basepath_no_ext=s_base, saved_files=saved_files, station_req=sta, event=event,
+                                    stream=st, plot_type="zoom", tick_major_s=major_tick_s, tick_minor_s=minor_tick_s,
+                                    window_start_relative_s=s_rel - half_width_s,
+                                    window_end_relative_s=s_rel + half_width_s, plot_picks=plot_picks,
+                                    zoom_level=level_name, zoom_reference_phase="S", zoom_reference_time=s_pick,
+                                    plot_cfg=plot_cfg)
 
         print(f"[OK] Elaborata stazione {tag}")
+
 
 # ============================================================
 # MAIN
@@ -977,35 +1110,57 @@ def main() -> None:
     if not args.event and not args.eventid:
         parser.error("Devi fornire --event (stringa manuale) oppure --eventid (per scaricare da FDSN)")
 
-    if not args.stations:
-        parser.error("--stations è obbligatorio")
-
     cfg_dict = load_json_config(args.config)
     zoom_level_presets = load_zoom_level_presets(cfg_dict)
     download_cfg, plot_cfg, tt_cfg = build_configs(cfg_dict)
     zoom_levels = parse_zoom_levels_arg(args.zoom_levels)
     ai_picks = load_ai_picks_json(args.ai_picks_json)
 
+    # Inizializziamo subito il client perché ci servirà sia per l'evento che per la ricerca spaziale
+    main_client = build_client(download_cfg)
+
     # --------------------------------------------------------
-    # LOGICA DI SCELTA EVENTO
+    # LOGICA DI SCELTA EVENTO E RINOMINA DIRECTORY
     # --------------------------------------------------------
     if args.eventid:
-        # Usiamo FDSN per tirare giù l'evento
-        temp_client = build_client(download_cfg)
-        event = fetch_event_info_from_fdsn(temp_client, args.eventid, args.originid)
+        event = fetch_event_info_from_fdsn(main_client, args.eventid, args.originid)
+        # --- NUOVO: Rinomina la cartella usando gli ID ---
+        download_cfg.output_dir = f"waveforms_event_eid{event.event_id}_oid{event.origin_id}"
     else:
-        # Usa la stringa passata manualmente
         event = parse_event_arg(args.event)
+        # Fallback se non usiamo FDSN
+        download_cfg.output_dir = "waveforms_event_manual"
 
     event.pick_p_iso = args.pick_p
     event.pick_s_iso = args.pick_s
+
     # --------------------------------------------------------
+    # LOGICA DI SCELTA STAZIONI (LISTA STATICA VS GEOSPAZIALE)
+    # --------------------------------------------------------
+    if args.networks and args.distances:
+        if args.stations:
+            print("[WARN] Attenzione: hai specificato sia --stations che --networks/--distances.")
+            print("[WARN] La lista manuale --stations verrà IGNORATA. Uso la scoperta geografica FDSN.")
+
+        stations = fetch_stations_by_distance(
+            client=main_client,
+            event=event,
+            networks=args.networks,
+            distances_str=args.distances,
+            channels=args.channels
+        )
+    elif args.stations:
+        stations = parse_stations_arg(args.stations)
+    else:
+        parser.error("Devi fornire --stations OPPURE i parametri --networks e --distances per la ricerca.")
+
+    if not stations:
+        print("[ERRORE] Nessuna stazione da elaborare. Uscita.")
+        return
 
     cake_model = None
     if tt_cfg.enabled:
         cake_model = load_cake_model_safe(tt_cfg.model_name)
-
-    stations = parse_stations_arg(args.stations)
 
     process_event_stations(
         event=event,
@@ -1021,6 +1176,7 @@ def main() -> None:
         make_zoom=args.zoom,
         plot_picks=args.plot_picks,
     )
+
 
 if __name__ == "__main__":
     main()
