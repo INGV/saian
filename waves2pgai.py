@@ -12,7 +12,7 @@ from matplotlib.ticker import MultipleLocator, FormatStrFormatter, AutoMinorLoca
 from obspy import Stream, Trace, UTCDateTime, read_inventory
 from obspy.clients.fdsn import Client
 from obspy.core.inventory import Inventory
-from obspy.geodetics import locations2degrees, kilometers2degrees
+from obspy.geodetics import locations2degrees, kilometers2degrees, degrees2kilometers
 from pyrocko import cake
 
 
@@ -838,16 +838,25 @@ def process_event_stations(event: EventInfo, stations: Iterable[StationRequest],
         if len(ai_picks) > 0 and ai_entry is None:
             print(f"[SKIP] {tag}: Saltata. Non è presente nel file JSON dell'AI.")
             continue
-            
+
         filter_def = parse_filter_arg(filter_arg, ai_entry)
 
-        sta_dir = out_root / tag
-
         try:
+            # 1. Carichiamo l'XML della stazione
             inv, xml_path, loaded_from_cache = get_or_load_stationxml(client=client, station_req=sta,
                                                                       cache_dir=stations_xml_dir)
+            # 2. Estraiamo le coordinate
+            sta_lat, sta_lon, _ = get_station_coordinates(inv)
         except Exception as exc:
             continue
+
+        # 3. Calcoliamo la distanza e formattiamo il prefisso
+        dist_deg = locations2degrees(event.latitude, event.longitude, sta_lat, sta_lon)
+        dist_km = degrees2kilometers(dist_deg)
+        dist_prefix = f"{int(round(dist_km)):04d}_"
+
+        # 4. Creiamo la directory con il prefisso (es. 0234_IV.SNTG.--.HH)
+        sta_dir = out_root / f"{dist_prefix}{tag}"
 
         p_pick, s_pick = resolve_reference_picks(event, inv, tt_cfg, cake_model, ai_entry)
 

@@ -1,6 +1,7 @@
 # Release Notes
 
 ### Release 1.1.0-dev (2026-06-29)
+- Issue #6: {DISTKM}_ prefix added to station directory name.
 - Issue #5: Vetical amplification, filtering options, new json schemas.
 - Issue #4: Zoom levels and corresponding json config implemented.
 - Issue #3: Input Json per stations from G AI implemented.
