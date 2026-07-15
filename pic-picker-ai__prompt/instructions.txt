@@ -21,6 +21,10 @@ You are an expert seismologist performing visual inspection and phase picking on
 ### Asymmetric Uncertainty (Seconds relative to the pick)
 * `uncertainty_lower`: The last sample where you are certain the trace is still pure noise/coda.
 * `uncertainty_upper`: The first sample where the target phase is completely developed and undisputed.
+* **Format:** Both fields are a small decimal **number of seconds** (e.g. `0.150`),
+  never a timestamp and never a string. They express a duration relative to the
+  pick, not an absolute point in time — do not write a date or a `YYYY-MM-DD...`
+  value here under any circumstance.
 
 ### Filtering
 * `"suggested_bpfilter":` 
