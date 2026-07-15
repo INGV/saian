@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import glob
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -11,8 +12,8 @@ from obspy import Stream, read, UTCDateTime
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Validazione e Plotting di Forme d'Onda Sismiche.")
-    parser.add_argument('--json_in', required=True, help="Percorso del file JSON di input")
-    parser.add_argument('--mseed_in', required=True, help="Lista di file MiniSEED separati da virgola (es. f1.mseed,f2.mseed)")
+    parser.add_argument('--wdir', required=True, help="Directory di lavoro della stazione (es. waveforms_event_.../IV.SNTG.--.HH)")
+    parser.add_argument('--stage', required=True, help="Numero dello stage da plottare (es. 1, 2)")
     return parser.parse_args()
 
 def load_json_data(json_path):
@@ -29,32 +30,68 @@ def time_formatter(x, pos):
 
 def main():
     args = parse_arguments()
-    event_data = load_json_data(args.json_in)
     
-    # Estrazione metadati attesi dal JSON (assumendo una stazione per file come da struttura)
+    # 1) Trova automaticamente il file JSON in base allo stage
+    json_pattern = os.path.join(args.wdir, f"*stage{args.stage}*.json")
+    json_files = glob.glob(json_pattern)
+    
+    if not json_files:
+        print(f"Errore: Nessun file JSON trovato in '{args.wdir}' per lo stage {args.stage}.")
+        sys.exit(1)
+    elif len(json_files) > 1:
+        print(f"Avviso: Trovati multipli file JSON per lo stage {args.stage}. Uso il primo: {json_files[0]}")
+        
+    json_path = json_files[0]
+    event_data = load_json_data(json_path)
+    
+    # 2) Trova automaticamente i file MiniSEED 'full'
+    mseed_files = glob.glob(os.path.join(args.wdir, "*_full.mseed"))
+    
+    # Fallback di sicurezza: se non trova _full, prende tutti i mseed scartando gli zoom
+    if not mseed_files:
+        all_mseed = glob.glob(os.path.join(args.wdir, "*.mseed"))
+        mseed_files = [f for f in all_mseed if "zoom" not in f.lower()]
+        
+    if not mseed_files:
+        print(f"Errore: Nessun file MiniSEED 'full' trovato in '{args.wdir}'.")
+        sys.exit(1)
+        
+    # Estrazione metadati attesi dal JSON
     sta_info = event_data['stations'][0]
     exp_net = sta_info['network']
     exp_sta = sta_info['stacode']
     exp_chan_prefix = sta_info['channel_code']
+    p_time_str = sta_info['pick_p']['time']
+    s_time_str = sta_info['pick_s']['time']
     
-    # Parsing dei file MiniSEED
-    mseed_files = [f.strip() for f in args.mseed_in.split(',')]
+    # --- LOG DI CONFERMA E DEBUG ---
+    print("\n" + "="*60)
+    print("📋 RESOCONTO DATI IN ELABORAZIONE")
+    print("="*60)
+    print(f"📄 JSON IN USO:  {os.path.abspath(json_path)}")
+    print(f"📡 STAZIONE:     {exp_net}.{exp_sta} (Canale atteso: {exp_chan_prefix}*)")
+    print(f"🔴 PICK P:       {p_time_str}")
+    print(f"🔵 PICK S:       {s_time_str}")
+    print("-" * 60)
+    print(f"📈 MINISEED IN CARICAMENTO ({len(mseed_files)} file trovati):")
+    for mf in mseed_files:
+        print(f"   -> {os.path.abspath(mf)}")
+    print("="*60 + "\n")
+    # -------------------------------
+    
+    # Lettura dei file MiniSEED trovati
     raw_stream = Stream()
-    
     for mseed_file in mseed_files:
-        if os.path.exists(mseed_file):
-            try:
-                raw_stream += read(mseed_file)
-            except Exception as e:
-                print(f"Impossibile leggere il file {mseed_file}: {e}")
-        else:
-            print(f"Avviso: File MiniSEED '{mseed_file}' non trovato.")
+        try:
+            raw_stream += read(mseed_file)
+        except Exception as e:
+            print(f"Impossibile leggere il file {mseed_file}: {e}")
 
     if len(raw_stream) == 0:
         print("Errore: Nessuna traccia caricata dai file MiniSEED forniti.")
         sys.exit(1)
 
-    # 1) Verifica della coerenza dei metadati
+    # 3) Verifica della coerenza dei metadati
     valid_stream = Stream()
     for tr in raw_stream:
         net = tr.stats.network
@@ -62,7 +99,7 @@ def main():
         loc = tr.stats.location
         chan = tr.stats.channel
         
-        # Normalizzazione del location code (vuoto o "--" sono considerati equivalenti)
+        # Normalizzazione del location code
         loc_is_valid = loc in ["", "--"]
         chan_is_valid = chan.startswith(exp_chan_prefix)
         
@@ -75,19 +112,19 @@ def main():
         print("Errore: Nessuna traccia MiniSEED è coerente con i metadati del JSON.")
         sys.exit(1)
 
-    # 2) Preparazione del Plotting (Z, N, E verticali)
+    # 4) Preparazione del Plotting (Z, N, E verticali)
     fig, axes = plt.subplots(3, 1, sharex=True, figsize=(12, 8))
     components = ['Z', 'N', 'E']
     
     # Parsing dei tempi dei Pick sismici dal JSON
-    p_pick = UTCDateTime(sta_info['pick_p']['time'])
-    s_pick = UTCDateTime(sta_info['pick_s']['time'])
+    p_pick = UTCDateTime(p_time_str)
+    s_pick = UTCDateTime(s_time_str)
     
-    # Conversione in formato matplotlib_date per la gestione degli assi
+    # Conversione in formato matplotlib_date
     p_time_md = p_pick.matplotlib_date
     s_time_md = s_pick.matplotlib_date
     
-    # Calcolo delle incertezze (in giorni, l'unità di misura di matplotlib dates)
+    # Calcolo delle incertezze
     sec_to_days = 1.0 / 86400.0
     p_low = p_time_md - (sta_info['pick_p']['uncertainty_lower'] * sec_to_days)
     p_high = p_time_md + (sta_info['pick_p']['uncertainty_upper'] * sec_to_days)
@@ -99,37 +136,31 @@ def main():
 
     for idx, comp in enumerate(components):
         ax = axes[idx]
-        # Selezione della componente specifica (es. HHZ, EHZ, etc.)
         tr_comp = valid_stream.select(component=comp)
         
         if not tr_comp:
             ax.text(0.5, 0.5, f"Componente {comp} Assente", transform=ax.transAxes, ha='center', va='center', color='gray')
             continue
             
-        tr = tr_comp[0] # Prende la prima traccia coerente trovata
+        tr = tr_comp[0]
         
-        # Ottimizzazione NumPy: Normalizzazione immediata all'ampiezza massima assoluta
+        # Ottimizzazione NumPy: Normalizzazione immediata
         max_amp = np.max(np.abs(tr.data))
         norm_data = tr.data / max_amp if max_amp > 0 else tr.data
         
-        # Vettore dei tempi assoluti in formato matplotlib date
         times_md = tr.times('matplotlib')
         
-        # Plot della waveform (linea nera)
         ax.plot(times_md, norm_data, color='k', linewidth=0.8, label=f"Ch: {tr.stats.channel}")
         ax.set_ylabel(f"{comp} (Counts Norm)", fontsize=10)
         
         # --- Configurazione Griglia e Densità Ticks ---
-        # 1. Ticks Principali (con Label) ogni 5.0 secondi
         major_spacing = 5.0 * sec_to_days 
         ax.xaxis.set_major_locator(mticker.MultipleLocator(major_spacing))
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(time_formatter))
         
-        # 2. Ticks Secondari (solo linee, senza testo) ogni 0.5 secondi per densità
         minor_spacing = 0.5 * sec_to_days
         ax.xaxis.set_minor_locator(mticker.MultipleLocator(minor_spacing))
         
-        # 3. Disegno differenziato della griglia per una migliore leggibilità
         ax.grid(True, which='major', linestyle='-', color='gray', alpha=0.6, linewidth=0.8)
         ax.grid(True, which='minor', linestyle=':', color='lightgray', alpha=0.5, linewidth=0.5)
         
@@ -137,7 +168,6 @@ def main():
         ax.axvline(p_time_md, color='red', linestyle='-', linewidth=1.5)
         ax.axvline(p_low, color='red', linestyle='--', linewidth=0.6)
         ax.axvline(p_high, color='red', linestyle='--', linewidth=0.6)
-        # Label P sopra l'asse
         ax.text(p_time_md, 1.02, f"P ({polarity})", color='red', transform=ax.get_xaxis_transform(), 
                 ha='center', va='bottom', fontsize=9, fontweight='bold')
         
@@ -145,20 +175,17 @@ def main():
         ax.axvline(s_time_md, color='blue', linestyle='-', linewidth=1.5)
         ax.axvline(s_low, color='blue', linestyle='--', linewidth=0.6)
         ax.axvline(s_high, color='blue', linestyle='--', linewidth=0.6)
-        # Label S sopra l'asse
         ax.text(s_time_md, 1.02, "S", color='blue', transform=ax.get_xaxis_transform(), 
                 ha='center', va='bottom', fontsize=9, fontweight='bold')
         
-        # Set dei limiti Y normalizzati
         ax.set_ylim(-1.1, 1.1)
 
-    # Finestra temporale intelligente intorno ai pick (es. 2s prima di P e 4s dopo S) per visualizzare la griglia 0.1s
+    # Finestra temporale intelligente
     zoom_start = p_time_md - (2.0 * sec_to_days)
     zoom_end = s_time_md + (4.0 * sec_to_days)
     plt.xlim(zoom_start, zoom_end)
 
-    # Titolo globale del grafico
-    fig.suptitle(f"Station: {exp_sta} (Network: {exp_net})", fontsize=14, fontweight='bold')
+    fig.suptitle(f"Station: {exp_sta} (Network: {exp_net}) - Stage {args.stage}", fontsize=14, fontweight='bold')
     plt.xlabel("Absolute Time (MM:SS)", fontsize=11)
     
     plt.tight_layout()
