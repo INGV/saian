@@ -1,1 +1,2 @@
 Analyze this new station following the GEM seismological protocol. Identify the absolute P and S arrival times, the uncertainties, and the polarity, and return exclusively the requested JSON code. Do not add text before or after the code block.
+Copy network, station code, and channel code exactly as printed in the plot title.
