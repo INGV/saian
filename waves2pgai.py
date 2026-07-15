@@ -233,6 +233,12 @@ def load_ai_picks_json(path: Optional[str]) -> dict[tuple[str, str, str], dict]:
         net = item["network"].strip()
         sta = item["stacode"].strip()
         cha = item["channel_code"].strip()
+        # Some AI models report the specific component channel they picked on
+        # (e.g. "HHZ") instead of the requested 2-letter band/instrument code
+        # (e.g. "HH"), which is how StationRequest.channel_prefix always looks
+        # up entries here. Normalize so both forms match the same station.
+        if len(cha) > 2:
+            cha = cha[:2]
         result[(net, sta, cha)] = item
     print(f"[OK] caricati {len(result)} pick AI dal file {path}")
     return result
