@@ -1,6 +1,8 @@
 # Release Notes
 
 ### Release 1.1.0-dev (2026-06-29)
+- Issue none: plot_picks now doesn't normalize and has a --view full/zoom option
+- Issue #8: waves2pgai now loads correctly the preferred origin id
 - Issue #7: load_ai_picks_json: crops 3 char channels to 2
 - Issue #6: {DISTKM}_ prefix added to station directory name.
 - Issue #5: Vetical amplification, filtering options, new json schemas.
