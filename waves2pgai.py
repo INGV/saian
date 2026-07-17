@@ -14,7 +14,8 @@ from obspy.clients.fdsn import Client
 from obspy.core.inventory import Inventory
 from obspy.geodetics import locations2degrees, kilometers2degrees, degrees2kilometers
 from pyrocko import cake
-
+import warnings
+warnings.filterwarnings("ignore", message="Given string seems to not be a valid URI")
 
 # ============================================================
 # DATACLASS E CONFIGURAZIONI
@@ -434,15 +435,20 @@ def fetch_event_info_from_fdsn(client: Client, eventid: str, originid: Optional[
 
     ev = cat[0]
     selected_origin = None
+    selected_origin = None
     if originid:
         for org in ev.origins:
             if originid in str(org.resource_id):
-                selected_origin = org; break
+                selected_origin = org;
+                break
         if not selected_origin: raise ValueError(f"Origin ID '{originid}' non trovato.")
     else:
-        selected_origin = ev.preferred_origin or ev.origins[0]
+        selected_origin = ev.preferred_origin() or (ev.origins[0] if ev.origins else None)
 
-    actual_origin_id = str(selected_origin.resource_id).split('=')[-1]
+    if not selected_origin:
+        raise ValueError("Nessuna origine trovata nel catalogo FDSN per questo evento.")
+
+    actual_origin_id = str(selected_origin.resource_id).split('=')[-1] if selected_origin.resource_id else "unknown_oid"
     depth_km = (selected_origin.depth / 1000.0) if selected_origin.depth is not None else 0.0
     return EventInfo(
         origin_time_iso=str(selected_origin.time), latitude=selected_origin.latitude,
@@ -529,7 +535,14 @@ def style_time_axis(ax, major_tick_s: float, minor_tick_s: float, draw_major_gri
     ax.xaxis.set_major_locator(MultipleLocator(major_tick_s))
     ax.xaxis.set_major_formatter(FormatStrFormatter("%.3f"))
     ax.xaxis.set_minor_locator(MultipleLocator(minor_tick_s))
-    ax.tick_params(axis="x", which="major", length=8, width=0.8, labelsize=9)
+
+    # MODIFICA QUI: Aggiunto labelrotation e ha (horizontal alignment)
+    ax.tick_params(axis="x", which="major", length=8, width=0.8, labelsize=9, labelrotation=45)
+
+    # Allineamento a destra per centrare il testo ruotato sulla tacca
+    for label in ax.get_xticklabels():
+        label.set_horizontalalignment('right')
+
     ax.tick_params(axis="x", which="minor", length=4, width=0.6, labelbottom=False)
     ax.grid(False, which="major", axis="x")
     ax.grid(False, which="minor", axis="x")
