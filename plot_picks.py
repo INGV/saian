@@ -17,6 +17,8 @@ def parse_arguments():
     parser.add_argument('--stage', required=True, help="Numero dello stage da plottare (es. 1, 2)")
     parser.add_argument('--view', choices=['full', 'zoom'], default='zoom',
                         help="Scegli se plottare l'intera traccia (full) o zoomare sui pick (zoom)")
+    parser.add_argument('--autoscale', action='store_true',
+                        help="Se presente, scala dinamicamente ogni componente in modo indipendente. Altrimenti usa scala globale per le 3 componenti.")
     return parser.parse_args()
 
 
@@ -77,6 +79,7 @@ def main():
     print(f"📄 JSON IN USO:  {os.path.abspath(json_path)}")
     print(f"📡 STAZIONE:     {exp_net}.{exp_sta} (Canale atteso: {exp_chan_prefix}*)")
     print(f"👁️ VISTA:        {args.view.upper()}")
+    print(f"⚖️ SCALA ASSE Y: {'INDIPENDENTE (Autoscale)' if args.autoscale else 'GLOBALE (Uniforme)'}")
     print(f"🔴 PICK P:       {p_time_str}")
     print(f"🔵 PICK S:       {s_time_str}")
     print("-" * 60)
@@ -98,9 +101,8 @@ def main():
         print("Errore: Nessuna traccia caricata dai file MiniSEED forniti.")
         sys.exit(1)
 
-    # 3) Verifica della coerenza dei metadati (OTTIMIZZATA CON OBSPY)
+    # 3) Verifica della coerenza dei metadati
     valid_stream = raw_stream.select(network=exp_net, station=exp_sta, channel=f"{exp_chan_prefix}*")
-    # Filtriamo manualmente solo le location code accettate
     valid_stream = Stream(traces=[tr for tr in valid_stream if tr.stats.location in ["", "--"]])
 
     if len(valid_stream) == 0:
@@ -141,43 +143,36 @@ def main():
         tr = tr_comp[0]
         times_md = tr.times('matplotlib')
 
-        # Plotta i counts puri e grezzi (senza normalizzazione)
+        # Plotta i counts puri e grezzi
         ax.plot(times_md, tr.data, color='k', linewidth=0.8, label=f"Ch: {tr.stats.channel}")
-
-        # Label Y ripristinata e inserita correttamente nel ciclo
         ax.set_ylabel(f"{comp} (Counts)", fontsize=10)
 
-        # --- Configurazione Griglia e Densità Ticks (OTTIMIZZATA CON MaxNLocator) ---
-        # Usa MaxNLocator per decidere un numero sicuro di label X (es. massimo 10)
+        # Configurazione Griglia e Densità Ticks
         ax.xaxis.set_major_locator(MaxNLocator(nbins=10, prune='both'))
         ax.xaxis.set_major_formatter(FuncFormatter(time_formatter))
 
-        # Mantiene la griglia minore estremamente fitta (ogni 0.5 secondi visivi)
         minor_spacing = 0.5 * sec_to_days
         ax.xaxis.set_minor_locator(MultipleLocator(minor_spacing))
 
         ax.grid(True, which='major', linestyle='-', color='gray', alpha=0.6, linewidth=0.8)
         ax.grid(True, which='minor', linestyle=':', color='lightgray', alpha=0.5, linewidth=0.5)
 
-        # --- Disegno Pick P (Rosso) ---
+        # Disegno Pick P
         ax.axvline(p_time_md, color='red', linestyle='-', linewidth=1.5)
         ax.axvline(p_low, color='red', linestyle='--', linewidth=0.6)
         ax.axvline(p_high, color='red', linestyle='--', linewidth=0.6)
         ax.text(p_time_md, 1.02, f"P ({polarity})", color='red', transform=ax.get_xaxis_transform(),
                 ha='center', va='bottom', fontsize=9, fontweight='bold')
 
-        # --- Disegno Pick S (Blu) ---
+        # Disegno Pick S
         ax.axvline(s_time_md, color='blue', linestyle='-', linewidth=1.5)
         ax.axvline(s_low, color='blue', linestyle='--', linewidth=0.6)
         ax.axvline(s_high, color='blue', linestyle='--', linewidth=0.6)
         ax.text(s_time_md, 1.02, "S", color='blue', transform=ax.get_xaxis_transform(),
                 ha='center', va='bottom', fontsize=9, fontweight='bold')
 
-        # Autoscale dinamico nativo di matplotlib
-        ax.autoscale(enable=True, axis='y', tight=False)
-
     # ---------------------------------------------------------
-    # GESTIONE VIEW: Applicazione intelligente dei limiti visivi
+    # GESTIONE VIEW: Applicazione dei limiti visivi X
     # ---------------------------------------------------------
     if args.view == 'zoom':
         # Finestra temporale intelligente P - 2s / S + 4s
@@ -185,18 +180,54 @@ def main():
         zoom_end = s_time_md + (4.0 * sec_to_days)
         plt.xlim(zoom_start, zoom_end)
 
-        # Ricalcolo limiti Y vettorializzato (per non schiacciare le tracce)
+    # ---------------------------------------------------------
+    # GESTIONE SCALATURA ASSE Y (Globale vs Autoscale Indipendente)
+    # ---------------------------------------------------------
+    x_min, x_max = plt.gca().get_xlim()
+
+    if args.autoscale:
+        # Comportamento: Ogni componente scala per i propri fatti
         for ax, comp in zip(axes, components):
             tr_comp = valid_stream.select(component=comp)
             if tr_comp:
                 tr = tr_comp[0]
                 t_arr = tr.times('matplotlib')
-                mask = (t_arr >= zoom_start) & (t_arr <= zoom_end)
+                mask = (t_arr >= x_min) & (t_arr <= x_max)
                 if np.any(mask):
                     visible_data = tr.data[mask]
                     ymin, ymax = np.min(visible_data), np.max(visible_data)
                     margin = (ymax - ymin) * 0.1  # 10% di margine
+                    # Gestisce il caso di traccia piatta (ymin == ymax)
+                    if margin == 0:
+                        margin = 1.0
                     ax.set_ylim(ymin - margin, ymax + margin)
+    else:
+        # Comportamento: Tutte le componenti mantengono lo stesso rapporto scala
+        global_ymin = float('inf')
+        global_ymax = float('-inf')
+
+        for comp in components:
+            tr_comp = valid_stream.select(component=comp)
+            if tr_comp:
+                tr = tr_comp[0]
+                t_arr = tr.times('matplotlib')
+                mask = (t_arr >= x_min) & (t_arr <= x_max)
+                
+                if np.any(mask):
+                    visible_data = tr.data[mask]
+                    comp_min = np.min(visible_data)
+                    comp_max = np.max(visible_data)
+                    
+                    if comp_min < global_ymin: global_ymin = comp_min
+                    if comp_max > global_ymax: global_ymax = comp_max
+
+        if global_ymin < float('inf'):
+            y_margin = (global_ymax - global_ymin) * 0.08  # Margine globale dell'8%
+            if y_margin == 0:
+                y_margin = 1.0
+            for ax in axes:
+                ax.set_ylim(global_ymin - y_margin, global_ymax + y_margin)
+
 
     fig.suptitle(f"Station: {exp_sta} (Network: {exp_net}) - Stage {args.stage} [{args.view.upper()}]", fontsize=14,
                  fontweight='bold')
