@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # 1. Inizializza Conda nel modo corretto per gli script di shell
-# Nota: ho mantenuto il tuo percorso, ma ho aggiunto un controllo standard per Ubuntu
 if [ -f /opt/anaconda3/etc/profile.d/conda.sh ]; then
     source /opt/anaconda3/etc/profile.d/conda.sh
 elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
@@ -25,22 +24,49 @@ if [[ $# -lt 3 ]]; then
 fi
 
 action=$(echo "$1" | tr "[:upper:]" "[:lower:]")
-read -r eid oid <<< $(echo "$2" | gawk -F\, '{print $1,$2}')
-read -r mindist maxdist <<< $(echo "$3" | gawk -F\, '{print $1,$2}')
 
-# 1. Creiamo l'array per gli argomenti opzionali
-# In Bash tolgo "local" perché l'allocazione locale è permessa solo dentro le funzioni
+# --- OTTIMIZZAZIONE EXTREME BASH (Senza Gawk) ---
+# Usiamo IFS per dividere le stringhe istantaneamente in RAM
+IFS=, read -r eid oid <<< "$2"
+IFS=, read -r mindist maxdist <<< "$3"
+# ------------------------------------------------
+
+# --- NUOVA LOGICA: RISOLUZIONE DINAMICA DEL PATH PGAI ---
+PGAI_DIR="./pgai" # Fallback di default
+CONFIG_FILE="path_to_git_pgai.txt"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    # Legge la prima riga del file testuale
+    read -r custom_path < "$CONFIG_FILE"
+    
+    # Trim degli spazi
+    custom_path=$(echo "$custom_path" | xargs)
+    
+    # Traduzione sicura della tilde (~) nel percorso home assoluto
+    PGAI_DIR="${custom_path/#\~/$HOME}"
+fi
+
+# Costruiamo il percorso sicuro ed esplicito
+WAVES_SCRIPT="${PGAI_DIR}/waves2pgai.py"
+
+if [[ ! -f "$WAVES_SCRIPT" ]]; then
+    echo -e "\n[ERRORE] Lo script non è stato trovato in: $WAVES_SCRIPT"
+    echo "Controlla il contenuto di $CONFIG_FILE o assicurati che esista la dir ./pgai."
+    exit 1
+fi
+# --------------------------------------------------------
+
+# Creiamo l'array per gli argomenti opzionali
 opt_args=()
 
-# 2. Controlliamo se $oid NON è vuoto (-n)
+# Controlliamo se $oid NON è vuoto (-n)
 if [[ -n "$oid" ]]; then
-    # Aggiungiamo sia il flag che il valore come due elementi distinti dell'array
     opt_args+=(--originid "$oid")
 fi
 
-# 3. Esegue la logica
+# Esegue la logica
 if [[ "$action" == "full" ]]; then
-        python3 pgai/waves2pgai.py \
+        python3 "$WAVES_SCRIPT" \
                 --config ./pgai_config.json \
                 --eventid "$eid" \
                 "${opt_args[@]}" \
@@ -51,16 +77,17 @@ if [[ "$action" == "full" ]]; then
 
 elif [[ "$action" == "zoom" ]]; then
 
-        # 1. Chiede l'input all'utente (il flag -n evita di andare a capo)
         echo -n "Inserisci nome della dir di stazione (ex: 0004_IV.APEC.--.HH): "
         read -r nslc_input
-        read -r station_string <<< $(echo "$nslc_input" | gawk -F\_ '{print $2}')
+        
+        # Altra ottimizzazione senza gawk: divide sull'underscore
+        IFS=_ read -r _ station_string <<< "$nslc_input"
 
         echo -n "Inserisci nome del file json stage (es: 0004_IV.APEC.--.HH_stage1.json): "
         read -r json_input
 
-        # 5. Lancia Python con i parametri dinamici appena creati
-        python3 pgai/waves2pgai.py \
+        # Lancia Python richiamando il Path risolto
+        python3 "$WAVES_SCRIPT" \
                 --config ./pgai_config.json \
                 --eventid "$eid" \
                 "${opt_args[@]}" \
