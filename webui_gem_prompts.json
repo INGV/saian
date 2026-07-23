@@ -1,0 +1,12 @@
+{
+  "stages": [
+    {
+     "level": "1",
+     "prompt": "Analyze this new station following the GEM seismological protocol. Identify the absolute P and S arrival times, the uncertainties, and the polarity, and return exclusively the requested JSON code. Do not add text before or after the code block."
+    },
+    {
+     "level": "2",
+     "prompt": "Analyze the same station following the GEM seismological protocol. Identify the absolute P times in the P zoom context and S times in the S zoom context, the uncertainties, and the polarity only for P, and return exclusively the requested JSON code. Do not add text before or after the code block."
+    }
+  ]
+}
