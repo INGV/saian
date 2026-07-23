@@ -14,22 +14,46 @@ C_YELLOW = '\033[93m'
 C_RED = '\033[91m'
 C_END = '\033[0m'
 
-# Variabile di stato globale per l'apertura del browser
 BROWSER_FAILED = False
+
+def resolve_pgai_path() -> Path:
+    """
+    Risolve dinamicamente il percorso della directory git 'pgai'.
+    Cerca un file di configurazione; se non c'è, tenta il fallback su './pgai'.
+    Se fallisce tutto, blocca l'esecuzione.
+    """
+    config_file = Path("path_to_git_pgai.txt")
+    default_path = Path("./pgai")
+    
+    # 1. Controlla se il file custom esiste
+    if config_file.exists():
+        # Legge il file, toglie gli spazi e a capo, ed espande eventuale '~' (home)
+        custom_path_str = config_file.read_text(encoding="utf-8").strip()
+        resolved_path = Path(custom_path_str).expanduser()
+        
+        # Validazione dell'esistenza della cartella custom
+        if not resolved_path.is_dir():
+            print(f"{C_RED}[ERRORE] Il file {config_file.name} esiste, ma il percorso al suo interno ({resolved_path}) non è una directory valida.{C_END}")
+            sys.exit(1)
+        return resolved_path
+
+    # 2. Se non c'è il file, prova il fallback
+    if default_path.is_dir():
+        print(f"{C_YELLOW}[Avviso] File {config_file.name} non trovato. Verrà usata la directory di default: {default_path.resolve()}{C_END}")
+        return default_path
+        
+    # 3. Se nulla funziona, esce con il tuo esatto messaggio
+    print(f"{C_RED}non c'è ./pgai, non c'è il file ./path_to_git_pgai.txt ... dunque non posso procedere. Crea il file ./path_to_git_pgai.txt e mettici il full path alla tua dir git di pgai{C_END}")
+    sys.exit(1)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Automazione Interattiva PGAI Pipeline")
-    parser.add_argument('--eventid', required=True, help="Event ID (mandatory)")
-    parser.add_argument('--originid', required=True, default=None, help="Origin ID (mandatory)")
-    parser.add_argument('--gemid', required=True, help="Personal PGAI GEM ID (mandatory)")
-    
+    parser.add_argument('--eventid', required=True, help="ID dell'evento (es. 46057512)")
+    parser.add_argument('--originid', required=False, default=None, help="ID dell'origine (opzionale)")
+    parser.add_argument('--gemid', required=True, help="ID del Gem personalizzato (OBBLIGATORIO)")
     return parser.parse_args()
 
 def load_gem_prompts(prompt_filepath: Path) -> tuple[str, str]:
-    """
-    Legge il file JSON strutturato ed estrae in modo sicuro i prompt
-    per il livello 1 (Full) e il livello 2 (Zoom).
-    """
     if not prompt_filepath.exists():
         print(f"{C_YELLOW}[Avviso] File JSON dei prompt non trovato in: {prompt_filepath}{C_END}")
         return "[PROMPT FULL NON TROVATO]", "[PROMPT ZOOM NON TROVATO]"
@@ -41,7 +65,6 @@ def load_gem_prompts(prompt_filepath: Path) -> tuple[str, str]:
         prompt_full = ""
         prompt_zoom = ""
         
-        # Iteriamo sulla lista 'stages' in modo sicuro usando .get()
         stages = data.get("stages", [])
         for stage in stages:
             if stage.get("level") == "1":
@@ -56,9 +79,6 @@ def load_gem_prompts(prompt_filepath: Path) -> tuple[str, str]:
         return "[ERRORE LETTURA]", "[ERRORE LETTURA]"
 
 def check_editors_availability():
-    """
-    Verifica che gli editor testuali hard-coded siano disponibili nel sistema.
-    """
     if sys.platform.startswith('darwin'):
         pass
     elif os.name == 'nt':
@@ -70,26 +90,18 @@ def check_editors_availability():
             sys.exit(1)
 
 def open_file_in_editor(filepath: Path):
-    """
-    Apre un file forzando l'editor di testo hard-coded del sistema operativo.
-    """
     path_str = str(filepath)
     try:
-        if sys.platform.startswith('darwin'):  # macOS
+        if sys.platform.startswith('darwin'):
             subprocess.call(('open', '-a', 'TextEdit', path_str))
-        elif os.name == 'nt':  # Windows
+        elif os.name == 'nt':
             subprocess.call(('notepad', path_str))
-        elif os.name == 'posix':  # Linux
+        elif os.name == 'posix':
             subprocess.call(('mousepad', path_str))
     except Exception as e:
         print(f"{C_RED}[Avviso] Impossibile aprire l'editor automaticamente: {e}{C_END}")
 
 def open_gemini_chat(url: str):
-    """
-    Tenta di aprire il browser forzando Google Chrome. 
-    Se fallisce, avvisa l'utente e fa un fallback sul browser di default.
-    Se fallisce del tutto, disattiva i tentativi futuri.
-    """
     global BROWSER_FAILED
     
     if BROWSER_FAILED:
@@ -122,10 +134,6 @@ def open_gemini_chat(url: str):
         BROWSER_FAILED = True
 
 def is_valid_json(filepath: Path) -> bool:
-    """
-    Legge il file appena salvato per assicurarsi che non sia vuoto
-    e contenga un JSON formattato correttamente.
-    """
     if not filepath.exists() or filepath.stat().st_size == 0:
         return False
     try:
@@ -136,9 +144,6 @@ def is_valid_json(filepath: Path) -> bool:
         return False
 
 def determine_station_level(sta_dir: Path) -> str:
-    """
-    Analizza il contenuto della directory per determinare il livello di lavorazione.
-    """
     stage1_jsons = list(sta_dir.glob("*_stage1.json"))
     stage2_jsons = list(sta_dir.glob("*_stage2.json"))
     zoom_pngs = list(sta_dir.glob("*zoom_*.png"))
@@ -152,12 +157,15 @@ def determine_station_level(sta_dir: Path) -> str:
     else:
         return "0"
 
-def run_waves2pgai_zoom(eventid: str, originid: str, sta_dir_name: str, json_path: Path, station_string: str):
+def run_waves2pgai_zoom(pgai_base_path: Path, eventid: str, originid: str, sta_dir_name: str, json_path: Path, station_string: str):
     """
-    Lancia il comando subprocess per generare gli zoom tramite waves2pgai.py.
+    Nota: ora questa funzione richiede il parametro pgai_base_path per sapere dove trovare lo script!
     """
+    # Costruiamo il percorso sicuro al file waves2pgai.py
+    waves2pgai_script = pgai_base_path / "waves2pgai.py"
+    
     cmd = [
-        "python3", "pgai/waves2pgai.py",
+        "python3", str(waves2pgai_script),
         "--config", "./pgai_config.json",
         "--eventid", eventid,
         "--ai-picks-json", str(json_path),
@@ -181,11 +189,13 @@ def run_waves2pgai_zoom(eventid: str, originid: str, sta_dir_name: str, json_pat
         return False
 
 def main():
+    # 0. Inizializzazione percorsi e setup editor
+    pgai_base_path = resolve_pgai_path()
     check_editors_availability()
     args = parse_arguments()
 
-    # Pre-caricamento dei prompt in memoria da JSON
-    prompt_file_path = Path("pgai/webui_gem_prompts.json")
+    # Pre-caricamento dei prompt dalla directory corretta
+    prompt_file_path = pgai_base_path / "webui_gem_prompts.json"
     prompt_full, prompt_zoom = load_gem_prompts(prompt_file_path)
 
     if args.originid:
@@ -282,7 +292,8 @@ def main():
                     print(f"{C_RED}[ERRORE] Il file '{stage1_jsons[0].name}' è corrotto o non è un JSON valido. Correggilo manualmente.{C_END}")
                     break
 
-                success = run_waves2pgai_zoom(args.eventid, args.originid, sta_dir.name, stage1_jsons[0], station_string)
+                # Nota: Passiamo pgai_base_path
+                success = run_waves2pgai_zoom(pgai_base_path, args.eventid, args.originid, sta_dir.name, stage1_jsons[0], station_string)
                 
                 if success:
                     continue 
