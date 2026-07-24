@@ -87,14 +87,25 @@ def check_editors_availability():
             sys.exit(1)
 
 def open_file_in_editor(filepath: Path):
-    path_str = str(filepath)
+    """
+    Apre un file forzando l'editor hard-coded.
+    Usa Popen su Linux per slegare il processo grafico e converte i path in assoluti.
+    """
+    # 1. Ottimizzazione: Trasformiamo sempre il percorso in assoluto
+    abs_path_str = str(filepath.resolve())
+    
     try:
-        if sys.platform.startswith('darwin'):
-            subprocess.call(('open', '-a', 'TextEdit', path_str))
-        elif os.name == 'nt':
-            subprocess.call(('notepad', path_str))
-        elif os.name == 'posix':
-            subprocess.call(('mousepad', path_str))
+        if sys.platform.startswith('darwin'):  # macOS
+            subprocess.call(('open', '-a', 'TextEdit', abs_path_str))
+        elif os.name == 'nt':  # Windows
+            subprocess.call(('notepad', abs_path_str))
+        elif os.name == 'posix':  # Linux
+            # 2. Ottimizzazione: Usiamo Popen (non bloccante) e silenziamo gli stream
+            subprocess.Popen(
+                ['mousepad', abs_path_str],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
     except Exception as e:
         print(f"{C_RED}[Avviso] Impossibile aprire l'editor automaticamente: {e}{C_END}")
 
