@@ -9,6 +9,7 @@ import json
 import webbrowser   
 import numpy as np
 import matplotlib.pyplot as plt
+import pyperclip
 
 from matplotlib.ticker import MultipleLocator, FormatStrFormatter, AutoMinorLocator
 from obspy import Stream, Trace, UTCDateTime, read_inventory
