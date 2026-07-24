@@ -64,10 +64,10 @@ Return ONLY a valid JSON object following this exact template. No conversational
         "uncertainty_upper": 0.100
       },
       "suggested_bpfilter": {
-        "mandatory": true,
-        "lower_corner": 1.0,
-        "upper_corner": 15.0,
-        "number_of_poles": 4
+        "mandatory": null,
+        "lower_corner": null,
+        "upper_corner": null,
+        "number_of_poles": null 
       },
       "next_stage": {
         "mandatory": true

@@ -7,6 +7,13 @@ import json
 import webbrowser
 from pathlib import Path
 
+# --- Gestione Sicura Dipendenza Esterna ---
+try:
+    import pyperclip
+    HAS_PYPERCLIP = True
+except ImportError:
+    HAS_PYPERCLIP = False
+
 # Colori per il terminale
 C_GREEN = '\033[92m'
 C_BLUE = '\033[94m'
@@ -17,32 +24,22 @@ C_END = '\033[0m'
 BROWSER_FAILED = False
 
 def resolve_pgai_path() -> Path:
-    """
-    Risolve dinamicamente il percorso della directory git 'pgai'.
-    Cerca un file di configurazione; se non c'è, tenta il fallback su './pgai'.
-    Se fallisce tutto, blocca l'esecuzione.
-    """
     config_file = Path("path_to_git_pgai.txt")
     default_path = Path("./pgai")
     
-    # 1. Controlla se il file custom esiste
     if config_file.exists():
-        # Legge il file, toglie gli spazi e a capo, ed espande eventuale '~' (home)
         custom_path_str = config_file.read_text(encoding="utf-8").strip()
         resolved_path = Path(custom_path_str).expanduser()
         
-        # Validazione dell'esistenza della cartella custom
         if not resolved_path.is_dir():
             print(f"{C_RED}[ERRORE] Il file {config_file.name} esiste, ma il percorso al suo interno ({resolved_path}) non è una directory valida.{C_END}")
             sys.exit(1)
         return resolved_path
 
-    # 2. Se non c'è il file, prova il fallback
     if default_path.is_dir():
         print(f"{C_YELLOW}[Avviso] File {config_file.name} non trovato. Verrà usata la directory di default: {default_path.resolve()}{C_END}")
         return default_path
         
-    # 3. Se nulla funziona, esce con il tuo esatto messaggio
     print(f"{C_RED}non c'è ./pgai, non c'è il file ./path_to_git_pgai.txt ... dunque non posso procedere. Crea il file ./path_to_git_pgai.txt e mettici il full path alla tua dir git di pgai{C_END}")
     sys.exit(1)
 
@@ -133,6 +130,21 @@ def open_gemini_chat(url: str):
         print(f"\n{C_YELLOW}Non riesco ad aprire per te la nuova CHAT, fallo tu e poi prosegui. ({e}){C_END}")
         BROWSER_FAILED = True
 
+def copy_prompt_to_clipboard(prompt_text: str):
+    """
+    Tenta di copiare il testo negli appunti se pyperclip è installato.
+    Fallisce in modo sicuro senza bloccare lo script se non lo è.
+    """
+    if HAS_PYPERCLIP:
+        try:
+            pyperclip.copy(prompt_text)
+            print(f"{C_GREEN}✅ Prompt copiato automaticamente negli appunti! (Usa Cmd+V / Ctrl+V in Gemini){C_END}")
+        except Exception as e:
+            print(f"{C_YELLOW}⚠️ Impossibile accedere agli appunti: {e}. Copia il testo manualmente.{C_END}")
+    else:
+        print(f"{C_YELLOW}💡 Suggerimento: Installa 'pyperclip' (pip install pyperclip) per copiare il prompt in automatico.{C_END}")
+
+
 def is_valid_json(filepath: Path) -> bool:
     if not filepath.exists() or filepath.stat().st_size == 0:
         return False
@@ -158,10 +170,6 @@ def determine_station_level(sta_dir: Path) -> str:
         return "0"
 
 def run_waves2pgai_zoom(pgai_base_path: Path, eventid: str, originid: str, sta_dir_name: str, json_path: Path, station_string: str):
-    """
-    Nota: ora questa funzione richiede il parametro pgai_base_path per sapere dove trovare lo script!
-    """
-    # Costruiamo il percorso sicuro al file waves2pgai.py
     waves2pgai_script = pgai_base_path / "waves2pgai.py"
     
     cmd = [
@@ -189,12 +197,10 @@ def run_waves2pgai_zoom(pgai_base_path: Path, eventid: str, originid: str, sta_d
         return False
 
 def main():
-    # 0. Inizializzazione percorsi e setup editor
     pgai_base_path = resolve_pgai_path()
     check_editors_availability()
     args = parse_arguments()
 
-    # Pre-caricamento dei prompt dalla directory corretta
     prompt_file_path = pgai_base_path / "webui_gem_prompts.json"
     prompt_full, prompt_zoom = load_gem_prompts(prompt_file_path)
 
@@ -262,11 +268,14 @@ def main():
 
             if level == "0":
                 print(f"{C_YELLOW}[Livello 0] Nessun JSON Stage 1 trovato.{C_END}")
-                print(f"\n{C_BLUE}--- COPIA QUESTO PROMPT IN GEMINI (RUN 1) ---{C_END}")
+                print(f"\n{C_BLUE}--- PROMPT IN GEMINI (RUN 1) ---{C_END}")
                 print(f"{prompt_full}")
-                print(f"{C_BLUE}---------------------------------------------{C_END}\n")
+                print(f"{C_BLUE}--------------------------------{C_END}\n")
                 
-                ans = input("➡️ Trasporta l'immagine FULL su Gemini assieme al prompt.\nScrivi 'y' e dai INVIO per aprire l'editor: ").strip().lower()
+                # --- Copia automatica negli appunti ---
+                copy_prompt_to_clipboard(prompt_full)
+                
+                ans = input("\n➡️ Trasporta l'immagine FULL su Gemini assieme al prompt.\nScrivi 'y' e dai INVIO per aprire l'editor: ").strip().lower()
                 
                 if ans == 'y':
                     stage1_path = sta_dir / f"{sta_dir.name}_stage1.json"
@@ -292,7 +301,6 @@ def main():
                     print(f"{C_RED}[ERRORE] Il file '{stage1_jsons[0].name}' è corrotto o non è un JSON valido. Correggilo manualmente.{C_END}")
                     break
 
-                # Nota: Passiamo pgai_base_path
                 success = run_waves2pgai_zoom(pgai_base_path, args.eventid, args.originid, sta_dir.name, stage1_jsons[0], station_string)
                 
                 if success:
@@ -303,11 +311,14 @@ def main():
 
             elif level == "1b":
                 print(f"{C_YELLOW}[Livello 1b] File zoom pronti. Manca lo Stage 2.{C_END}")
-                print(f"\n{C_BLUE}--- COPIA QUESTO PROMPT IN GEMINI (RUN 2) ---{C_END}")
+                print(f"\n{C_BLUE}--- PROMPT IN GEMINI (RUN 2) ---{C_END}")
                 print(f"{prompt_zoom}")
-                print(f"{C_BLUE}---------------------------------------------{C_END}\n")
+                print(f"{C_BLUE}--------------------------------{C_END}\n")
                 
-                ans = input("➡️ Trasporta le immagini ZOOM su Gemini assieme al prompt.\nScrivi 'y' e dai INVIO per aprire il file JSON dello Stage 2: ").strip().lower()
+                # --- Copia automatica negli appunti ---
+                copy_prompt_to_clipboard(prompt_zoom)
+                
+                ans = input("\n➡️ Trasporta le immagini ZOOM su Gemini assieme al prompt.\nScrivi 'y' e dai INVIO per aprire il file JSON dello Stage 2: ").strip().lower()
                 
                 if ans == 'y':
                     stage2_path = sta_dir / f"{sta_dir.name}_stage2.json"
