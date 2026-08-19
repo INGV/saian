@@ -323,8 +323,8 @@ def parse_filter_arg(filter_arg: Optional[str], ai_entry: Optional[dict]) -> Opt
         
     parts = filter_arg.split(",")
     if len(parts) != 4:
-        raise ValueError("Il filtro deve essere 'suggested' o 'tipo,co1,co2,np' (es. bp,1.0,15.0,4 o hp,,1.0,4)")
-        
+       raise ValueError("Filter must be 'suggested' or 'type,co1,co2,np' (e.g., bp,1.0,15.0,4 or hp,,1.0,4)")
+
     ftype, co1_str, co2_str, np_str = [p.strip() for p in parts]
     ftype = ftype.lower()
     corners = int(np_str)
@@ -336,7 +336,7 @@ def parse_filter_arg(filter_arg: Optional[str], ai_entry: Optional[dict]) -> Opt
     elif ftype == "lp":
         return FilterDef("lp", float(co1_str), None, corners, False)
     else:
-        raise ValueError(f"Tipo filtro sconosciuto: {ftype}")
+        raise ValueError(f"Unknown filter type: {ftype}")
 
 
 # ============================================================
@@ -373,14 +373,14 @@ def iter_requested_zoom_specs(
 def parse_event_arg(event_arg: str) -> EventInfo:
     parts = [x.strip() for x in event_arg.split(",")]
     if len(parts) != 4:
-        raise ValueError("--event deve essere nel formato 'OT,LAT,LON,DEP'")
+        raise ValueError("--event must be in 'OT,LAT,LON,DEP' format")
     return EventInfo(
         origin_time_iso=parts[0], latitude=float(parts[1]), longitude=float(parts[2]),
         depth_km=float(parts[3]), event_id="manual", origin_id="manual"
     )
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Scarica waveform INGV per AI picking.")
+    parser = argparse.ArgumentParser(description="Download INGV waveforms for AI picking.")
     parser.add_argument("--eventid", required=False, default=None)
     parser.add_argument("--originid", required=False, default=None)
     parser.add_argument("--event", required=False, default=None)
@@ -398,8 +398,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plot-picks", action="store_true")
     parser.add_argument("--ai-picks-json", default=None)
     parser.add_argument("--zoom-levels", default=None)
-    parser.add_argument("--expand-dynamics", action="store_true", help="Amplifica il segnale ed abbatte il rumore preservando le proporzioni fisiche tra le componenti")
-    parser.add_argument("--expand-window", type=float, default=None, help="Finestra RMS in secondi per il calcolo dell'inviluppo di espansione")
+    parser.add_argument("--expand-dynamics", action="store_true", help="Amplifies the signal and suppresses noise while preserving the physical proportions between components")
+    parser.add_argument("--expand-window", type=float, default=None, help="RMS window in seconds for the expansion envelope calculation")
     parser.add_argument("--filter", required=False, default=None, help="Es: 'suggested' o 'bp,1.0,15.0,4'")
     return parser
 
@@ -430,8 +430,8 @@ def fetch_event_info_from_fdsn(client: Client, eventid: str, originid: Optional[
     print(f"[FDSN] Download dati evento eventid={eventid} (includeallorigins=True)...")
     try:
         cat = client.get_events(eventid=eventid, includeallorigins=True, includeallmagnitudes=True)
-    except Exception as e: raise ValueError(f"Impossibile scaricare evento FDSN: {e}")
-    if not cat: raise ValueError(f"Nessun evento trovato")
+    except Exception as e: raise ValueError(f"Unable to download FDSN event: {e}")
+    if not cat: raise ValueError(f"No event found")
 
     ev = cat[0]
     selected_origin = None
@@ -441,12 +441,12 @@ def fetch_event_info_from_fdsn(client: Client, eventid: str, originid: Optional[
             if originid in str(org.resource_id):
                 selected_origin = org;
                 break
-        if not selected_origin: raise ValueError(f"Origin ID '{originid}' non trovato.")
+        if not selected_origin: raise ValueError(f"Origin ID '{originid}' not found.")
     else:
         selected_origin = ev.preferred_origin() or (ev.origins[0] if ev.origins else None)
 
     if not selected_origin:
-        raise ValueError("Nessuna origine trovata nel catalogo FDSN per questo evento.")
+        raise ValueError("No origin found in FDSN catalog for this event.")
 
     actual_origin_id = str(selected_origin.resource_id).split('=')[-1] if selected_origin.resource_id else "unknown_oid"
     depth_km = (selected_origin.depth / 1000.0) if selected_origin.depth is not None else 0.0
@@ -457,13 +457,13 @@ def fetch_event_info_from_fdsn(client: Client, eventid: str, originid: Optional[
 
 def fetch_stations_by_distance(client: Client, event: EventInfo, networks: str, distances_str: str, channels: str) -> list[StationRequest]:
     try: min_km, max_km = map(float, distances_str.split(","))
-    except ValueError: raise ValueError("Parametro --distances non valido. Es: '0,50'")
+    except ValueError: raise ValueError("Invalid --distances parameter. E.g., '0,50'")
 
     minradius_deg, maxradius_deg = kilometers2degrees(min_km), kilometers2degrees(max_km)
     try:
         inv = client.get_stations(network=networks, latitude=event.latitude, longitude=event.longitude,
                                   minradius=minradius_deg, maxradius=maxradius_deg, level="station")
-    except Exception as e: raise ValueError(f"Ricerca spaziale fallita: {e}")
+    except Exception as e: raise ValueError(f"Spatial search failed: {e}")
 
     reqs = []
     requested_channels = [c.strip() for c in channels.split(",") if c.strip()] or ["*"]
@@ -498,7 +498,7 @@ def get_or_load_stationxml(client: Client, station_req: StationRequest, cache_di
     return inv, xml_path, False
 
 def get_station_coordinates(inv: Inventory) -> tuple[float, float, float]:
-    if len(inv.networks) == 0 or len(inv.networks[0].stations) == 0: raise ValueError("Inventory vuoto")
+    if len(inv.networks) == 0 or len(inv.networks[0].stations) == 0: raise ValueError("Empty Inventory")
     sta = inv.networks[0].stations[0]
     return float(sta.latitude), float(sta.longitude), float(sta.elevation)
 
@@ -702,7 +702,8 @@ def plot_full_station(stream: Stream, event: EventInfo, station_req: StationRequ
         ax.tick_params(axis="y", which="major", labelsize=8)
         ax.tick_params(axis="y", which="minor", length=2)
 
-    axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
+    #axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
+    axes[-1].set_xlabel("Relative time from first sample [s]", fontsize=11)
     
     # --- TITOLO CORRETTO E AGGIORNATO ---
     origin = ensure_utc(event.origin_time_iso)
@@ -742,7 +743,7 @@ def plot_zoom_around_pick(stream: Stream, station_req: StationRequest, pick_time
 
     if not np.any(mask):
         for ax, tr in zip(axes, processed_traces):
-            ax.text(0.5, 0.5, "Pick fuori dalla finestra scaricata", transform=ax.transAxes, ha="center", va="center", fontsize=11)
+            ax.text(0.5, 0.5, "Pick outside downloaded window", transform=ax.transAxes, ha="center", va="center", fontsize=11)
             ax.set_ylabel(tr.stats.channel, rotation=0, labelpad=28, fontsize=10)
         plt.close(fig)
         return []
@@ -780,7 +781,8 @@ def plot_zoom_around_pick(stream: Stream, station_req: StationRequest, pick_time
         ax.tick_params(axis="y", which="major", labelsize=8)
         ax.tick_params(axis="y", which="minor", length=2)
 
-    axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
+    #axes[-1].set_xlabel("Tempo relativo al primo campione [s]", fontsize=11)
+    axes[-1].set_xlabel("Relative time from first sample [s]", fontsize=11)
     
     # --- TITOLO CORRETTO E AGGIORNATO ---
     first_sample = first_sample_time_for_stream(st)
@@ -801,7 +803,7 @@ def plot_zoom_around_pick(stream: Stream, station_req: StationRequest, pick_time
 def resolve_reference_picks(event: EventInfo, inv: Inventory, tt_cfg: TravelTimeConfig, cake_model,
                             ai_entry: Optional[dict] = None) -> tuple[Optional[UTCDateTime], Optional[UTCDateTime]]:
     origin = ensure_utc(event.origin_time_iso)
-    if origin is None: raise ValueError("origin_time_iso obbligatorio")
+    if origin is None: raise ValueError("origin_time_iso is mandatory")
 
     p_pick, s_pick = None, None
 
