@@ -54,14 +54,14 @@ Return ONLY a valid JSON object following this exact template. No conversational
       "channel_code": "string",
       "pick_p": {
         "time": "YYYY-MM-DDTHH:MM:SS.fffZ",
-        "uncertainty_lower": 0.040,
-        "uncertainty_upper": 0.080,
-        "polarity": "up" 
+        "uncertainty_lower": null,
+        "uncertainty_upper": null,
+        "polarity": null 
       },
       "pick_s": {
         "time": "YYYY-MM-DDTHH:MM:SS.fffZ",
-        "uncertainty_lower": 0.050,
-        "uncertainty_upper": 0.100
+        "uncertainty_lower": null,
+        "uncertainty_upper": null 
       },
       "suggested_bpfilter": {
         "mandatory": null,
