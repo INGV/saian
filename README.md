@@ -93,7 +93,7 @@ The current tool provides:
 
 ## AI Picks JSON Format
 
-The generative AI used in this project must return its picking results in a structured JSON file that can be used as input by `waves2pgai.py` in `--zoom` mode.
+The generative AI used in this project must return its picking results in a structured JSON file that can be used as input by `waves2saian.py` in `--zoom` mode.
 
 This JSON is intended to represent the output of one AI interpretation step on waveform images.
 
