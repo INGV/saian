@@ -126,7 +126,7 @@ The following operational guidelines detail the setup and execution phases requi
 ### Git Repository Setup
 1. Clone the repository into your local environment:
    ```bash
-   git clone git@gitlab.rm.ingv.it:raffaele.distefano/SAIAN.git
+   git clone git@github.com:INGV/saian.git
    ```
 2. Create a dedicated working directory in your preferred location (e.g., `saian_working_dir`).
 3. Copy the `saian_config.json` configuration file from the Git repository into your working directory.
