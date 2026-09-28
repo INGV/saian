@@ -86,34 +86,47 @@ def check_editors_availability():
             print(f"{C_YELLOW}Install it by running: sudo apt-get install mousepad (or equivalent){C_END}")
             sys.exit(1)
 
+# =====================================================================
+# UNIVERSAL OPENING FUNCTIONS (NON-BLOCKING)
+# =====================================================================
+def open_directory(dir_path: Path):
+    """
+    Opens the specified directory in the OS native file manager asynchronously.
+    Supports macOS (open), Windows (os.startfile), and Linux (xdg-open).
+    """
+    abs_path_str = str(dir_path.resolve())
+    print(f"{C_BLUE}   -> [OS] Requesting Directory open for: {dir_path.name}{C_END}")
+    
+    try:
+        if sys.platform.startswith('darwin'):  # macOS
+            subprocess.Popen(['open', abs_path_str])
+        elif os.name == 'nt':  # Windows
+            os.startfile(abs_path_str)
+        elif os.name == 'posix':  # Linux
+            subprocess.Popen(['xdg-open', abs_path_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"{C_RED}   [Warning] OS exception while opening directory: {e}{C_END}")
+
 def open_file_in_editor(filepath: Path):
     """
-    Opens a file forcing the hard-coded editor.
-    Uses Popen on Linux to detach the graphical process and converts paths to absolute.
+    Opens a file using the hard-coded text editor in a fully detached mode.
     """
-    # 1. Optimization: Always transform the path to absolute
     abs_path_str = str(filepath.resolve())
     
     try:
         if sys.platform.startswith('darwin'):  # macOS
-            subprocess.call(('open', '-a', 'TextEdit', abs_path_str))
+            subprocess.Popen(['open', '-e', abs_path_str])
         elif os.name == 'nt':  # Windows
-            subprocess.call(('notepad', abs_path_str))
+            subprocess.Popen(['notepad', abs_path_str])
         elif os.name == 'posix':  # Linux
-            # 2. Optimization: We use Popen (non-blocking) and silence the streams
-            subprocess.Popen(
-                ['mousepad', abs_path_str],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+            subprocess.Popen(['mousepad', abs_path_str], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
         print(f"{C_RED}[Warning] Cannot open the editor automatically: {e}{C_END}")
+# =====================================================================
 
 def open_gemini_chat(url: str):
     global BROWSER_FAILED
-    
-    if BROWSER_FAILED:
-        return
+    if BROWSER_FAILED: return
         
     try:
         chrome_browser = None
@@ -131,7 +144,6 @@ def open_gemini_chat(url: str):
             success = chrome_browser.open_new_tab(url)
         else:
             print(f"\n{C_YELLOW}[WARNING] Google Chrome was not found. The default browser will be used.{C_END}")
-            print(f"{C_YELLOW}It is not recommended to run the procedure without Chrome for optimal compatibility.{C_END}\n")
             success = webbrowser.open_new_tab(url)
 
         if not success:
@@ -142,10 +154,6 @@ def open_gemini_chat(url: str):
         BROWSER_FAILED = True
 
 def copy_prompt_to_clipboard(prompt_text: str):
-    """
-    Attempts to copy text to the clipboard if pyperclip is installed.
-    Fails safely without blocking the script if it is not.
-    """
     if HAS_PYPERCLIP:
         try:
             pyperclip.copy(prompt_text)
@@ -156,29 +164,33 @@ def copy_prompt_to_clipboard(prompt_text: str):
         print(f"{C_YELLOW}💡 Tip: Install 'pyperclip' (pip install pyperclip) to copy the prompt automatically.{C_END}")
 
 
-def is_valid_json(filepath: Path) -> bool:
-    if not filepath.exists() or filepath.stat().st_size == 0:
-        return False
+# --- NEW: Enhanced JSON State Checker ---
+def check_json_state(filepath: Path) -> str:
+    """
+    Returns the exact state of the JSON file to allow for granular error handling.
+    Returns: "MISSING", "EMPTY", "INVALID", or "VALID".
+    """
+    if not filepath.exists(): 
+        return "MISSING"
+    if filepath.stat().st_size == 0: 
+        return "EMPTY"
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8') as f: 
             json.load(f)
-        return True
-    except (json.JSONDecodeError, ValueError):
-        return False
+        return "VALID"
+    except (json.JSONDecodeError, ValueError): 
+        return "INVALID"
+# ----------------------------------------
 
 def determine_station_level(sta_dir: Path) -> str:
     stage1_jsons = list(sta_dir.glob("*_stage1.json"))
     stage2_jsons = list(sta_dir.glob("*_stage2.json"))
     zoom_pngs = list(sta_dir.glob("*zoom_*.png"))
 
-    if stage2_jsons:
-        return "2"
-    elif stage1_jsons and zoom_pngs:
-        return "1b"
-    elif stage1_jsons and not zoom_pngs:
-        return "1a"
-    else:
-        return "0"
+    if stage2_jsons: return "2"
+    elif stage1_jsons and zoom_pngs: return "1b"
+    elif stage1_jsons and not zoom_pngs: return "1a"
+    else: return "0"
 
 def run_waves2saian_zoom(pgai_base_path: Path, eventid: str, originid: str, sta_dir_name: str, json_path: Path, station_string: str):
     waves2saian_script = pgai_base_path / "waves2saian.py"
@@ -194,8 +206,7 @@ def run_waves2saian_zoom(pgai_base_path: Path, eventid: str, originid: str, sta_
         "--expand-dynamics",
         "--filter", "suggested"
     ]
-    if originid:
-        cmd.extend(["--originid", originid])
+    if originid: cmd.extend(["--originid", originid])
 
     print(f"{C_BLUE}Execution in progress: {' '.join(cmd)}{C_END}")
     
@@ -215,11 +226,7 @@ def main():
     prompt_file_path = pgai_base_path / "webui_gem_prompts.json"
     prompt_full, prompt_zoom = load_gem_prompts(prompt_file_path)
 
-    if args.originid:
-        event_dir_name = f"waveforms_event_eid{args.eventid}_oid{args.originid}"
-    else:
-        event_dir_name = f"waveforms_event_eid{args.eventid}" 
-    
+    event_dir_name = f"waveforms_event_eid{args.eventid}_oid{args.originid}" if args.originid else f"waveforms_event_eid{args.eventid}"
     event_dir = Path(event_dir_name)
 
     if not event_dir.exists() or not event_dir.is_dir():
@@ -244,9 +251,12 @@ def main():
     for sta_dir in station_dirs:
         initial_level = determine_station_level(sta_dir)
         
-        if initial_level == "2" and skip_completed:
-            print(f"{C_GREEN}⏭️ SKIPPING COMPLETED STATION: {sta_dir.name}{C_END}")
-            continue
+        # Fast-forward past completed stations
+        if initial_level == "2":
+            stage2_path = list(sta_dir.glob("*_stage2.json"))[0]
+            if check_json_state(stage2_path) == "VALID" and skip_completed:
+                print(f"{C_GREEN}⏭️ SKIPPING COMPLETED STATION: {sta_dir.name}{C_END}")
+                continue
 
         parts = sta_dir.name.split('_', 1)
         station_string = parts[1] if len(parts) > 1 else sta_dir.name
@@ -255,38 +265,79 @@ def main():
         print(f"📡 STATION ANALYSIS: {C_BLUE}{sta_dir.name}{C_END}")
         print("="*70)
 
+        # Local flags to manage UI state within the current station loop
         gemini_opened_for_this_station = False
+        finder_opened_for_this_stage = False
 
         while True: 
             level = determine_station_level(sta_dir)
 
+            # ---------------------------------------------------------
+            # LEVEL 2: VALIDATE STAGE 2 JSON
+            # ---------------------------------------------------------
             if level == "2":
-                print(f"{C_GREEN}[Level 2] Processing completed (Stage 2 JSON present).{C_END}")
-                ans = input("Move on to the next station? (y/n): ").strip().lower()
-                if ans in ['y', 'yes']:
-                    break 
-                elif ans in ['n', 'no']:
-                    print("Exiting automation.")
-                    sys.exit(0)
-                else:
-                    print("Answer 'y' or 'n'.")
-                    continue
+                stage2_path = list(sta_dir.glob("*_stage2.json"))[0]
+                state = check_json_state(stage2_path)
+                
+                if state == "VALID":
+                    print(f"{C_GREEN}[Level 2] Processing completed (Stage 2 JSON is valid).{C_END}")
+                    ans = input("Move on to the next station? (y/n): ").strip().lower()
+                    if ans in ['y', 'yes']:
+                        break 
+                    elif ans in ['n', 'no']:
+                        print("Exiting automation.")
+                        sys.exit(0)
+                    else:
+                        print("Answer 'y' or 'n'.")
+                        continue
+                
+                elif state == "EMPTY":
+                    print(f"{C_RED}[ERROR] The Stage 2 JSON file '{stage2_path.name}' is empty.{C_END}")
+                    ans = input(f"{C_YELLOW}Do you want to (d)elete and restart this stage, or (s)kip station? (d/s): {C_END}").strip().lower()
+                    if ans == 'd':
+                        stage2_path.unlink() # Deleting reverts level to 1b!
+                        finder_opened_for_this_stage = False
+                        continue
+                    elif ans == 's':
+                        break
+                        
+                elif state == "INVALID":
+                    print(f"{C_RED}[ERROR] The Stage 2 JSON file '{stage2_path.name}' is malformed.{C_END}")
+                    ans = input(f"{C_YELLOW}Do you want to (d)elete & restart stage, (c)orrect manually, or (s)kip station? (d/c/s): {C_END}").strip().lower()
+                    if ans == 'd':
+                        stage2_path.unlink() # Deleting reverts level to 1b!
+                        finder_opened_for_this_stage = False
+                        continue
+                    elif ans == 'c':
+                        open_file_in_editor(stage2_path)
+                        input(f"{C_BLUE}➡️ Correct the JSON, SAVE the file, and press ENTER to re-evaluate...{C_END}")
+                        continue
+                    elif ans == 's':
+                        break
 
+            # ---------------------------------------------------------
+            # OPEN GEMINI (Only once per station, right before active work)
+            # ---------------------------------------------------------
             if not gemini_opened_for_this_station:
                 pgai_url = f"https://gemini.google.com/gem/{args.gemid}"
                 open_gemini_chat(pgai_url)
                 gemini_opened_for_this_station = True
 
+            # ---------------------------------------------------------
+            # LEVEL 0: CREATE STAGE 1 JSON
+            # ---------------------------------------------------------
             if level == "0":
-                print(f"{C_YELLOW}[Level 0] No Stage 1 JSON found.{C_END}")
-                print(f"\n{C_BLUE}--- PROMPT IN GEMINI (RUN 1) ---{C_END}")
-                print(f"{prompt_full}")
-                print(f"{C_BLUE}--------------------------------{C_END}\n")
+                if not finder_opened_for_this_stage:
+                    print(f"{C_YELLOW}[Level 0] No Stage 1 JSON found.{C_END}")
+                    print(f"\n{C_BLUE}--- PROMPT IN GEMINI (RUN 1) ---{C_END}")
+                    print(f"{prompt_full}")
+                    print(f"{C_BLUE}--------------------------------{C_END}\n")
+                    
+                    copy_prompt_to_clipboard(prompt_full)
+                    open_directory(sta_dir)
+                    finder_opened_for_this_stage = True
                 
-                # --- Safe automatic copy to clipboard ---
-                copy_prompt_to_clipboard(prompt_full)
-                
-                ans = input("\n➡️ Drag the FULL image to Gemini along with the prompt.\nType 'y' and press ENTER to open the editor: ").strip().lower()
+                ans = input("\n➡️ Drag the FULL image to Gemini along with the prompt.\nType 'y' to open editor, or 's' to skip this station: ").strip().lower()
                 
                 if ans == 'y':
                     stage1_path = sta_dir / f"{sta_dir.name}_stage1.json"
@@ -295,41 +346,75 @@ def main():
                     
                     input(f"{C_BLUE}➡️ File '{stage1_path.name}' opened! Paste the output, SAVE the file and press ENTER here to continue...{C_END}")
                     
-                    if not is_valid_json(stage1_path):
-                        print(f"{C_RED}[ERROR] The file is empty or the JSON is invalid! Check that you pasted and saved correctly.{C_END}")
-                        continue
+                    # We do NOT validate here. The loop continues and becomes Level 1a.
+                    # Level 1a will handle validation at its entry gate.
+                    finder_opened_for_this_stage = False
                     continue
+                elif ans == 's':
+                    print(f"{C_YELLOW}Skipping station {sta_dir.name} and moving to the next one.{C_END}")
+                    break
                 else:
                     print("Input not recognized. Try again.")
 
+            # ---------------------------------------------------------
+            # LEVEL 1A: VALIDATE STAGE 1 JSON & GENERATE ZOOMS
+            # ---------------------------------------------------------
             elif level == "1a":
-                print(f"{C_YELLOW}[Level 1a] Stage 1 JSON present, but zoom files are missing.{C_END}")
-                input("➡️ I will proceed to generate the zooms. Press ENTER to start...")
+                stage1_path = list(sta_dir.glob("*_stage1.json"))[0]
+                state = check_json_state(stage1_path)
                 
-                stage1_jsons = list(sta_dir.glob("*_stage1.json"))
-                
-                if not is_valid_json(stage1_jsons[0]):
-                    print(f"{C_RED}[ERROR] The file '{stage1_jsons[0].name}' is corrupted or not a valid JSON. Correct it manually.{C_END}")
-                    break
+                if state == "VALID":
+                    print(f"{C_YELLOW}[Level 1a] Stage 1 JSON is present and valid.{C_END}")
+                    ans = input("➡️ I will proceed to generate the zooms. Press ENTER to start, or 's' to skip: ").strip().lower()
+                    if ans == 's': break
+                    
+                    success = run_waves2saian_zoom(pgai_base_path, args.eventid, args.originid, sta_dir.name, stage1_path, station_string)
+                    if success:
+                        finder_opened_for_this_stage = False
+                        continue 
+                    else:
+                        print(f"{C_RED}Zoom generation failed. Skipping to the next station.{C_END}")
+                        break 
+                        
+                elif state == "EMPTY":
+                    print(f"{C_RED}[ERROR] The Stage 1 JSON file '{stage1_path.name}' is empty.{C_END}")
+                    ans = input(f"{C_YELLOW}Do you want to (d)elete and restart this station from zero, or (s)kip station? (d/s): {C_END}").strip().lower()
+                    if ans == 'd':
+                        stage1_path.unlink() # Reverts level to 0
+                        finder_opened_for_this_stage = False
+                        continue
+                    elif ans == 's':
+                        break
+                        
+                elif state == "INVALID":
+                    print(f"{C_RED}[ERROR] The Stage 1 JSON file '{stage1_path.name}' is malformed.{C_END}")
+                    ans = input(f"{C_YELLOW}Do you want to (d)elete & restart from scratch, (c)orrect manually, or (s)kip station? (d/c/s): {C_END}").strip().lower()
+                    if ans == 'd':
+                        stage1_path.unlink() # Reverts level to 0
+                        finder_opened_for_this_stage = False
+                        continue
+                    elif ans == 'c':
+                        open_file_in_editor(stage1_path)
+                        input(f"{C_BLUE}➡️ Correct the JSON, SAVE the file, and press ENTER to re-evaluate...{C_END}")
+                        continue
+                    elif ans == 's':
+                        break
 
-                success = run_waves2saian_zoom(pgai_base_path, args.eventid, args.originid, sta_dir.name, stage1_jsons[0], station_string)
-                
-                if success:
-                    continue 
-                else:
-                    print(f"{C_RED}Zoom generation failed. Skipping to the next station.{C_END}")
-                    break 
-
+            # ---------------------------------------------------------
+            # LEVEL 1B: CREATE STAGE 2 JSON
+            # ---------------------------------------------------------
             elif level == "1b":
-                print(f"{C_YELLOW}[Level 1b] Zoom files ready. Stage 2 is missing.{C_END}")
-                print(f"\n{C_BLUE}--- PROMPT IN GEMINI (RUN 2) ---{C_END}")
-                print(f"{prompt_zoom}")
-                print(f"{C_BLUE}--------------------------------{C_END}\n")
+                if not finder_opened_for_this_stage:
+                    print(f"{C_YELLOW}[Level 1b] Zoom files ready. Stage 2 is missing.{C_END}")
+                    print(f"\n{C_BLUE}--- PROMPT IN GEMINI (RUN 2) ---{C_END}")
+                    print(f"{prompt_zoom}")
+                    print(f"{C_BLUE}--------------------------------{C_END}\n")
+                    
+                    copy_prompt_to_clipboard(prompt_zoom)
+                    open_directory(sta_dir)
+                    finder_opened_for_this_stage = True
                 
-                # --- Safe automatic copy to clipboard ---
-                copy_prompt_to_clipboard(prompt_zoom)
-                
-                ans = input("\n➡️ Drag the ZOOM images to Gemini along with the prompt.\nType 'y' and press ENTER to open the Stage 2 JSON file: ").strip().lower()
+                ans = input("\n➡️ Drag the ZOOM images to Gemini along with the prompt.\nType 'y' to open Stage 2 JSON, or 's' to skip: ").strip().lower()
                 
                 if ans == 'y':
                     stage2_path = sta_dir / f"{sta_dir.name}_stage2.json"
@@ -338,10 +423,13 @@ def main():
                     
                     input(f"{C_BLUE}➡️ File '{stage2_path.name}' opened! Paste the output, SAVE the file and press ENTER here to continue...{C_END}")
                     
-                    if not is_valid_json(stage2_path):
-                        print(f"{C_RED}[ERROR] The file is empty or the JSON is invalid! Check that you pasted and saved correctly.{C_END}")
-                        continue
+                    # We do NOT validate here. The loop continues and becomes Level 2.
+                    # Level 2 will handle validation at its entry gate.
+                    finder_opened_for_this_stage = False
                     continue 
+                elif ans == 's':
+                    print(f"{C_YELLOW}Skipping station {sta_dir.name} and moving to the next one.{C_END}")
+                    break
                 else:
                     print("Input not recognized. Try again.")
 
